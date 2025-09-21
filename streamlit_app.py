@@ -131,34 +131,59 @@ class TesseractOCR:
         return binary
     
     def extract_text(self, image: np.ndarray) -> list:
-        """使用Tesseract提取文本 - 完全保留文字樣式和斷句"""
+        """使用Tesseract提取文本 - 改善標點符號和標題識別"""
         try:
             # 預處理圖像
             processed_image = self.preprocess_image(image)
             
-            # 使用最佳配置來保持文字樣式和斷句
-            config = '--psm 3 -c preserve_interword_spaces=1 -c textord_min_linesize=1.5'
+            # 使用多種配置來改善識別
+            configs = [
+                '--psm 3 -c preserve_interword_spaces=1 -c textord_min_linesize=1.5 -c textord_old_baselines=0',
+                '--psm 4 -c preserve_interword_spaces=1 -c textord_min_linesize=1.5',
+                '--psm 6 -c preserve_interword_spaces=1 -c textord_min_linesize=1.5'
+            ]
+            
             lang = 'chi_tra+chi_sim+eng'  # 繁體中文+簡體中文+英文
+            best_result = ""
+            best_confidence = 0
             
-            # 直接獲取文本，保持原始格式
-            text_result = pytesseract.image_to_string(
-                processed_image, 
-                lang=lang, 
-                config=config
-            )
+            # 嘗試多種配置，選擇最佳結果
+            for config in configs:
+                try:
+                    text_result = pytesseract.image_to_string(
+                        processed_image, 
+                        lang=lang, 
+                        config=config
+                    )
+                    
+                    # 計算平均置信度
+                    data = pytesseract.image_to_data(
+                        processed_image, 
+                        lang=lang, 
+                        config=config, 
+                        output_type=pytesseract.Output.DICT
+                    )
+                    
+                    confidences = [int(conf) for conf in data['conf'] if int(conf) > 0]
+                    avg_confidence = sum(confidences) / len(confidences) if confidences else 0
+                    
+                    if avg_confidence > best_confidence:
+                        best_result = text_result
+                        best_confidence = avg_confidence
+                        best_data = data
+                        
+                except Exception as e:
+                    logger.warning(f"Tesseract配置 {config} 失敗: {e}")
+                    continue
             
-            # 按行分割文本，保持原始斷句
-            lines = text_result.strip().split('\n')
+            if not best_result:
+                return []
             
-            # 獲取詳細數據用於位置信息
-            data = pytesseract.image_to_data(
-                processed_image, 
-                lang=lang, 
-                config=config, 
-                output_type=pytesseract.Output.DICT
-            )
+            # 後處理文本，改善標點符號識別
+            processed_text = self._post_process_text(best_result)
+            lines = processed_text.strip().split('\n')
             
-            # 創建文本塊，按行組織
+            # 創建文本塊
             text_blocks = []
             current_line = ""
             current_y = None
@@ -167,20 +192,22 @@ class TesseractOCR:
             current_height = 0
             max_confidence = 0
             
-            for i in range(len(data['text'])):
-                text = data['text'][i].strip()
-                confidence = int(data['conf'][i])
-                x = data['left'][i]
-                y = data['top'][i]
-                width = data['width'][i]
-                height = data['height'][i]
+            for i in range(len(best_data['text'])):
+                text = best_data['text'][i].strip()
+                confidence = int(best_data['conf'][i])
+                x = best_data['left'][i]
+                y = best_data['top'][i]
+                width = best_data['width'][i]
+                height = best_data['height'][i]
                 
                 if text and confidence > 30:
                     # 如果是新行或位置差距較大，保存當前行
-                    if current_y is not None and abs(y - current_y) > 10:
+                    if current_y is not None and abs(y - current_y) > 15:
                         if current_line.strip():
+                            # 後處理當前行
+                            processed_line = self._post_process_text(current_line.strip())
                             text_blocks.append({
-                                "text": current_line.strip(),
+                                "text": processed_line,
                                 "confidence": max_confidence / 100.0,
                                 "position": {
                                     "x": current_x,
@@ -214,8 +241,9 @@ class TesseractOCR:
             
             # 保存最後一行
             if current_line.strip():
+                processed_line = self._post_process_text(current_line.strip())
                 text_blocks.append({
-                    "text": current_line.strip(),
+                    "text": processed_line,
                     "confidence": max_confidence / 100.0,
                     "position": {
                         "x": current_x,
@@ -230,6 +258,100 @@ class TesseractOCR:
         except Exception as e:
             logger.error(f"Tesseract OCR失敗: {e}")
             return []
+    
+    def _post_process_text(self, text: str) -> str:
+        """後處理文本，改善標點符號和格式"""
+        if not text:
+            return text
+        
+        # 修復常見的標點符號識別錯誤
+        replacements = {
+            # 修復句號
+            '。': '。',
+            '．': '。',
+            '·': '。',
+            '•': '。',
+            'o': '。',
+            'O': '。',
+            '0': '。',
+            
+            # 修復逗號
+            '，': '，',
+            ',': '，',
+            '、': '，',
+            
+            # 修復冒號
+            '：': '：',
+            ':': '：',
+            
+            # 修復分號
+            '；': '；',
+            ';': '；',
+            
+            # 修復問號
+            '？': '？',
+            '?': '？',
+            
+            # 修復感嘆號
+            '！': '！',
+            '!': '！',
+            
+            # 修復括號
+            '（': '（',
+            '(': '（',
+            '）': '）',
+            ')': '）',
+            
+            # 修復引號
+            '"': '"',
+            '"': '"',
+            ''': ''',
+            ''': ''',
+            
+            # 修復破折號
+            '—': '—',
+            '-': '—',
+            '–': '—',
+            
+            # 修復省略號
+            '…': '…',
+            '...': '…',
+        }
+        
+        # 應用替換
+        for old, new in replacements.items():
+            text = text.replace(old, new)
+        
+        # 修復常見的識別錯誤
+        text = text.replace('o ', '。')  # o 後面跟空格 -> 句號
+        text = text.replace('o\n', '。\n')  # o 後面跟換行 -> 句號
+        text = text.replace('o', '。')  # 單獨的 o -> 句號
+        
+        # 修復列表符號
+        text = text.replace('o ', '• ')  # o 開頭 -> 列表符號
+        text = text.replace('o\n', '•\n')  # o 開頭換行 -> 列表符號
+        
+        # 修復標題識別（大寫字母開頭且較短的行）
+        lines = text.split('\n')
+        processed_lines = []
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
+                processed_lines.append(line)
+                continue
+                
+            # 檢查是否可能是標題
+            if (len(line) < 50 and 
+                (line[0].isupper() or line[0].isdigit()) and
+                not line.endswith(('。', '，', '：', '；', '？', '！'))):
+                # 可能是標題，確保以句號結尾
+                if not line.endswith('。'):
+                    line += '。'
+            
+            processed_lines.append(line)
+        
+        return '\n'.join(processed_lines)
     
     def _merge_nearby_texts(self, texts: list) -> list:
         """合併相近的文本，解決斷句問題"""
