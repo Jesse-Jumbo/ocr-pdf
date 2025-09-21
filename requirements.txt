@@ -1,4 +1,3 @@
-# 完全免費的OCR應用依賴
 streamlit==1.28.1
 numpy==1.24.3
 Pillow==10.1.0

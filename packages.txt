@@ -1,4 +1,3 @@
-# 系統依賴 - 完全免費
 poppler-utils
 tesseract-ocr
 tesseract-ocr-chi-tra
