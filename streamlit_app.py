@@ -731,6 +731,133 @@ class OCRProcessor:
         
         return binary
     
+    def extract_text_google_drive_ocr(self, pdf_path: str) -> Dict[str, Any]:
+        """使用免費OCR服務提取文本 - 高精度方案"""
+        try:
+            # 嘗試使用免費OCR服務
+            from free_ocr_api import FreeOCRAPI
+            free_ocr = FreeOCRAPI()
+            
+            # 使用OCR.space進行處理
+            result = free_ocr.process_pdf_with_free_ocr(pdf_path)
+            
+            if "error" not in result:
+                st.success("✅ 使用免費OCR服務處理完成")
+                return result
+            else:
+                st.warning(f"⚠️ 免費OCR服務失敗: {result['error']}，使用增強版Tesseract")
+                return self._fallback_enhanced_ocr(pdf_path)
+                
+        except ImportError:
+            st.warning("⚠️ 免費OCR服務未配置，使用增強版Tesseract")
+            return self._fallback_enhanced_ocr(pdf_path)
+        except Exception as e:
+            logger.error(f"免費OCR服務失敗: {e}")
+            return self._fallback_enhanced_ocr(pdf_path)
+    
+    def _fallback_enhanced_ocr(self, pdf_path: str) -> Dict[str, Any]:
+        """增強版OCR降級方案"""
+        try:
+            # 轉換PDF為圖像
+            images = self.pdf_to_images(pdf_path, dpi=600)  # 使用更高DPI
+            
+            if not images:
+                return {"error": "PDF轉換失敗"}
+            
+            result = {
+                "file_name": os.path.basename(pdf_path),
+                "total_pages": len(images),
+                "pages": []
+            }
+            
+            for page_num, image in enumerate(images, 1):
+                # 使用多種OCR配置嘗試
+                page_texts = []
+                
+                # 配置1：高DPI + 標準配置
+                texts1 = self.extract_text_tesseract_enhanced(image, "horizontal")
+                page_texts.extend(texts1)
+                
+                # 配置2：Chrome風格配置
+                texts2 = self.extract_text_chrome_style(image, "horizontal")
+                page_texts.extend(texts2)
+                
+                # 去重和合併
+                unique_texts = self._merge_and_deduplicate_texts(page_texts)
+                
+                # 分類文本
+                classified_blocks = []
+                for text_data in unique_texts:
+                    clean_text = self.correct_text(text_data["text"])
+                    text_type = self._classify_text_simple(text_data, image.shape[0])
+                    
+                    classified_blocks.append({
+                        "text": clean_text,
+                        "type": text_type,
+                        "direction": "horizontal",
+                        "confidence": text_data["confidence"]
+                    })
+                
+                # 按位置排序
+                classified_blocks.sort(key=lambda x: (x.get("position", {}).get("y", 0), 
+                                                   x.get("position", {}).get("x", 0)))
+                
+                page_result = {
+                    "page_number": page_num,
+                    "text_blocks": classified_blocks,
+                    "full_text": "\n".join([block["text"] for block in classified_blocks])
+                }
+                result["pages"].append(page_result)
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"增強版OCR失敗: {e}")
+            return {"error": f"OCR處理失敗: {str(e)}"}
+    
+    def _merge_and_deduplicate_texts(self, text_lists: List[List[Dict]]) -> List[Dict]:
+        """合併和去重文本結果"""
+        all_texts = []
+        for text_list in text_lists:
+            all_texts.extend(text_list)
+        
+        # 去重：基於位置和文本內容
+        unique_texts = []
+        for text_data in all_texts:
+            is_duplicate = False
+            for existing in unique_texts:
+                if (self._texts_overlap_simple(existing, text_data["position"]) and 
+                    abs(len(text_data["text"]) - len(existing["text"])) < 2):
+                    # 如果重疊且長度相近，保留置信度更高的
+                    if text_data["confidence"] > existing["confidence"]:
+                        unique_texts.remove(existing)
+                        unique_texts.append(text_data)
+                    is_duplicate = True
+                    break
+            
+            if not is_duplicate:
+                unique_texts.append(text_data)
+        
+        return unique_texts
+    
+    def _classify_text_simple(self, text_data: Dict, page_height: int) -> str:
+        """簡單的文本分類"""
+        text = text_data["text"]
+        position = text_data.get("position", {})
+        
+        # 計算相對位置
+        relative_y = position.get("y", 0) / page_height if page_height > 0 else 0
+        
+        # 簡單分類規則
+        if relative_y < 0.1 and len(text) < 50:
+            return "title"
+        elif "圖" in text or "表" in text or "說明" in text:
+            return "caption"
+        elif "|" in text or "  " in text:
+            return "table"
+        else:
+            return "content"
+    
     def merge_ocr_results(self, paddle_results: List[Dict], tesseract_results: List[Dict]) -> List[Dict[str, Any]]:
         """合併PaddleOCR和Tesseract的結果"""
         merged = []
@@ -865,7 +992,7 @@ def load_ocr_processor():
     return True
 
 def process_pdf_file(uploaded_file, progress_bar, status_text, realtime_container):
-    """處理上傳的PDF文件 - 支持即時更新和暫停/停止"""
+    """處理上傳的PDF文件 - 使用增強版OCR"""
     try:
         # 保存上傳的文件到臨時目錄
         with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
@@ -873,124 +1000,52 @@ def process_pdf_file(uploaded_file, progress_bar, status_text, realtime_containe
             tmp_file_path = tmp_file.name
         
         # 更新狀態
-        status_text.text("正在轉換PDF為圖像...")
+        status_text.text("正在使用增強版OCR處理PDF...")
         progress_bar.progress(10)
         
-        # 轉換PDF為圖像 - 添加進度更新
+        # 使用增強版OCR處理
         try:
-            # 使用預設DPI或從session state獲取
-            dpi = st.session_state.get('dpi', 300)
-            images = st.session_state.ocr_processor.pdf_to_images(tmp_file_path, dpi=dpi)
-            if not images:
-                return None, "PDF轉換失敗"
+            result = st.session_state.ocr_processor.extract_text_google_drive_ocr(tmp_file_path)
+            
+            if "error" in result:
+                return None, result["error"]
             
             # 更新進度
-            progress_bar.progress(20)
-            status_text.text(f"PDF轉換完成，共 {len(images)} 頁，開始OCR處理...")
+            progress_bar.progress(50)
+            status_text.text("OCR處理完成，正在整理結果...")
             
-        except Exception as e:
-            logger.error(f"PDF轉換錯誤: {e}")
-            return None, f"PDF轉換失敗: {str(e)}"
-        
-        total_pages = len(images)
-        result = {
-            "file_name": uploaded_file.name,
-            "total_pages": total_pages,
-            "pages": []
-        }
-        
-        # 開始處理
-        status_text.text("開始處理PDF頁面...")
-        
-        # 準備頁面數據 - 預處理圖像
-        page_data_list = []
-        for page_num, image in enumerate(images, 1):
-            page_height = image.shape[0]
-            # 預先應用超解析預處理
-            processed_image = st.session_state.ocr_processor.preprocess_image(
-                image, "horizontal", scale=st.session_state.upscale_factor
-            )
-            page_data_list.append((page_num, processed_image, page_height))
-        
-        # 使用批次處理，平衡速度和穩定性
-        completed_pages = 0
-        enable_postprocess = st.session_state.get('enable_text_postprocess', True)
-        batch_size = st.session_state.get('batch_size', 3)
-        
-        # 初始化累積文字
-        if 'accumulated_text' not in st.session_state:
-            st.session_state.accumulated_text = ""
-        
-        # 批次處理頁面
-        for i in range(0, len(page_data_list), batch_size):
-            # 檢查是否被停止
-            if st.session_state.get('stop_processing', False):
-                status_text.text("處理已停止")
-                # 保存部分結果
-                result["pages"].sort(key=lambda x: x["page_number"])
-                return result, "處理被用戶停止"
+            # 初始化累積文字
+            if 'accumulated_text' not in st.session_state:
+                st.session_state.accumulated_text = ""
             
-            # 獲取當前批次的頁面
-            batch_pages = page_data_list[i:i + batch_size]
-            batch_results = []
-            
-            # 處理當前批次
-            for page_data in batch_pages:
-                page_num, image, page_height = page_data
-                
-                try:
-                    # 處理單一頁面
-                    page_result, organized_texts = st.session_state.ocr_processor.process_single_page(page_data, enable_postprocess)
-                    batch_results.append((page_result, organized_texts, page_num))
-                    
-                except Exception as e:
-                    logger.error(f"處理第 {page_num} 頁時發生錯誤: {e}")
-                    continue
-            
-            # 批次完成後更新結果
-            for page_result, organized_texts, page_num in batch_results:
-                result["pages"].append(page_result)
-                completed_pages += 1
-                
-                # 添加當前頁面的文字到累積文字
-                page_text = f"\n=== 第 {page_num} 頁 ===\n"
-                for block in organized_texts:
+            # 顯示結果
+            for page in result["pages"]:
+                page_text = f"\n=== 第 {page['page_number']} 頁 ===\n"
+                for block in page["text_blocks"]:
                     page_text += f"[{block['type']}] {block['text']}\n"
                 st.session_state.accumulated_text += page_text
                 
                 # 即時顯示累積結果
-                title_count = sum(1 for block in organized_texts if block["type"] == "title")
-                content_count = sum(1 for block in organized_texts if block["type"] == "content")
-                other_count = len(organized_texts) - title_count - content_count
-                stats_line = f"已完成: {completed_pages}/{total_pages} 頁｜當前頁文本塊: {len(organized_texts)}｜標題: {title_count}｜內文: {content_count}｜其他: {other_count}"
+                title_count = sum(1 for block in page["text_blocks"] if block["type"] == "title")
+                content_count = sum(1 for block in page["text_blocks"] if block["type"] == "content")
+                other_count = len(page["text_blocks"]) - title_count - content_count
+                stats_line = f"已完成: {page['page_number']}/{result['total_pages']} 頁｜文本塊: {len(page['text_blocks'])}｜標題: {title_count}｜內文: {content_count}｜其他: {other_count}"
                 
                 # 在容器中顯示統計和文字
                 with realtime_container:
                     st.write(stats_line)
-                    st.text_area("即時文字結果", st.session_state.accumulated_text, height=300, key=f"realtime_text_{completed_pages}", label_visibility="collapsed")
-                
-                # 更新進度條 - 顯示具體頁數
-                progress = 10 + (completed_pages / total_pages) * 80
-                progress_bar.progress(int(progress))
-                status_text.text(f"正在處理第 {completed_pages}/{total_pages} 頁...")
+                    st.text_area("即時文字結果", st.session_state.accumulated_text, height=300, key=f"realtime_text_{page['page_number']}", label_visibility="collapsed")
             
-            # 批次完成後清理記憶體
-            if completed_pages % (batch_size * 2) == 0:  # 每處理2個批次就清理一次
-                st.session_state.ocr_processor._cleanup_memory()
-                status_text.text(f"記憶體清理完成，繼續處理第 {completed_pages + 1}/{total_pages} 頁...")
-                
-                # 短暫暫停，讓記憶體完全釋放
-                import time
-                time.sleep(0.5)
-        
-        # 按頁碼排序結果
-        result["pages"].sort(key=lambda x: x["page_number"])
+            # 更新進度
+            progress_bar.progress(100)
+            status_text.text("處理完成！")
+            
+        except Exception as e:
+            logger.error(f"增強版OCR處理錯誤: {e}")
+            return None, f"OCR處理失敗: {str(e)}"
         
         # 清理臨時文件
         os.unlink(tmp_file_path)
-        
-        status_text.text("處理完成！")
-        progress_bar.progress(100)
         
         return result, None
         
@@ -1109,7 +1164,7 @@ def create_download_links(result):
         data=json_data,
         file_name=f"{result['file_name']}_ocr.json",
         mime="application/json",
-        key=f"download_json_{result['file_name']}"
+        key=f"download_json_{result['file_name']}_{int(time.time())}"
     )
     
     # 按類型分類的文本下載
@@ -1132,7 +1187,7 @@ def create_download_links(result):
         data=classified_text,
         file_name=f"{result['file_name']}_classified.txt",
         mime="text/plain",
-        key=f"download_classified_{result['file_name']}"
+        key=f"download_classified_{result['file_name']}_{int(time.time())}"
     )
     
     # 純文本下載
@@ -1142,7 +1197,7 @@ def create_download_links(result):
         data=full_text,
         file_name=f"{result['file_name']}_text.txt",
         mime="text/plain",
-        key=f"download_text_{result['file_name']}"
+        key=f"download_text_{result['file_name']}_{int(time.time())}"
     )
     
     # 統計報告下載
@@ -1181,7 +1236,7 @@ def create_download_links(result):
         data=stats_json,
         file_name=f"{result['file_name']}_stats.json",
         mime="application/json",
-        key=f"download_stats_{result['file_name']}"
+        key=f"download_stats_{result['file_name']}_{int(time.time())}"
     )
 
 def main():
@@ -1214,8 +1269,15 @@ def main():
         st.write("**支持格式:** PDF")
         st.write("**支持語言:** 中文（簡體/繁體）")
         st.write("**文本方向:** 直式/橫式")
-        st.write("**OCR引擎:** Tesseract (Chrome風格)")
-        st.info("ℹ️ 在Streamlit Cloud環境中，使用Chrome風格的Tesseract進行OCR處理")
+        st.write("**OCR引擎:** 免費OCR服務 + Tesseract")
+        st.info("ℹ️ 優先使用免費OCR服務，失敗時使用增強版Tesseract")
+        
+        # 顯示OCR服務狀態
+        try:
+            from free_ocr_api import FreeOCRAPI
+            st.success("✅ 免費OCR服務已配置")
+        except ImportError:
+            st.warning("⚠️ 免費OCR服務未配置，僅使用Tesseract")
         
         # 清除狀態按鈕
         st.markdown("### 🔧 系統控制")
