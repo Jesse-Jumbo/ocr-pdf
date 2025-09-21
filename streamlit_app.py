@@ -88,30 +88,35 @@ class OCRProcessor:
         if not self._paddle_initialized:
             with self._init_lock:
                 if not self._paddle_initialized:
-                    self.paddle_ocr = PaddleOCR(
-                        use_angle_cls=True,
-                        lang='ch',  # 中文（包含簡繁體）
-                        use_gpu=False,
-                        show_log=False,
-                        use_space_char=True,
-                        det_limit_side_len=1920,  # 提高解析度限制
-                        det_limit_type='max',
-                        rec_batch_num=1,  # 降低批次大小提高準確率
-                        max_text_length=50,  # 增加最大文字長度
-                        rec_algorithm='SVTR_LCNet',  # 使用更高效的算法
-                        cls_thresh=0.9,  # 降低分類閾值，檢測更多文字
-                        det_thresh=0.05,  # 大幅降低檢測閾值
-                        det_db_thresh=0.05,  # 大幅降低DB閾值
-                        det_db_box_thresh=0.2,  # 降低框閾值
-                        det_db_unclip_ratio=2.5,  # 增加unclip比例
-                        # 使用支持的檢測算法
-                        det_algorithm='DB',
-                        # 額外優化參數
-                        rec_char_dict_path=None,  # 使用預設字典
-                        use_dilation=True,  # 啟用膨脹
-                        det_db_score_mode='fast'  # 快速評分模式
-                    )
-                    self._paddle_initialized = True
+                    try:
+                        self.paddle_ocr = PaddleOCR(
+                            use_angle_cls=True,
+                            lang='ch',  # 中文（包含簡繁體）
+                            use_gpu=False,
+                            show_log=False,
+                            use_space_char=True,
+                            # 簡化配置，避免CPU指令集問題
+                            det_limit_side_len=960,  # 降低解析度限制
+                            det_limit_type='max',
+                            rec_batch_num=1,
+                            max_text_length=25,  # 降低最大文字長度
+                            rec_algorithm='CRNN',  # 使用更兼容的算法
+                            cls_thresh=0.9,
+                            det_thresh=0.1,  # 提高檢測閾值
+                            det_db_thresh=0.1,  # 提高DB閾值
+                            det_db_box_thresh=0.3,  # 提高框閾值
+                            det_db_unclip_ratio=1.5,  # 降低unclip比例
+                            det_algorithm='DB',
+                            use_dilation=False,  # 禁用膨脹，避免CPU問題
+                            det_db_score_mode='fast'
+                        )
+                        self._paddle_initialized = True
+                        logger.info("PaddleOCR初始化成功")
+                    except Exception as e:
+                        logger.error(f"PaddleOCR初始化失敗: {e}")
+                        logger.info("將只使用Tesseract進行OCR")
+                        self.paddle_ocr = None
+                        self._paddle_initialized = True  # 標記為已初始化，避免重複嘗試
     
     def _cleanup_memory(self):
         """清理記憶體，避免累積過多"""
@@ -209,27 +214,68 @@ class OCRProcessor:
     
     def detect_text_direction_per_block(self, image: np.ndarray) -> List[Dict[str, Any]]:
         """檢測每個文本塊的方向 (直式/橫式)"""
-        # 使用PaddleOCR檢測文本方向
-        result = self.paddle_ocr.ocr(image, cls=True)
+        # 如果PaddleOCR不可用，使用Tesseract
+        if self.paddle_ocr is None:
+            return self._detect_text_direction_tesseract(image)
         
-        if not result or not result[0]:
-            return []
-        
-        text_blocks = []
-        for line in result[0]:
-            if len(line) >= 2:
-                bbox = line[0]
-                text = line[1][0]
-                confidence = line[1][1]
+        try:
+            # 使用PaddleOCR檢測文本方向
+            result = self.paddle_ocr.ocr(image, cls=True)
+            
+            if not result or not result[0]:
+                return self._detect_text_direction_tesseract(image)
+            
+            text_blocks = []
+            for line in result[0]:
+                if len(line) >= 2:
+                    bbox = line[0]
+                    text = line[1][0]
+                    confidence = line[1][1]
+                    
+                    # 計算文本框的長寬比和角度
+                    x_coords = [point[0] for point in bbox]
+                    y_coords = [point[1] for point in bbox]
+                    
+                    width = max(x_coords) - min(x_coords)
+                    height = max(y_coords) - min(y_coords)
+                    
+                    # 判斷方向
+                    if height > 0:
+                        aspect_ratio = width / height
+                        direction = "vertical" if aspect_ratio < self.vertical_threshold else "horizontal"
+                    else:
+                        direction = "horizontal"
+                    
+                    text_blocks.append({
+                        "text": text,
+                        "confidence": confidence,
+                        "bbox": bbox,
+                        "direction": direction,
+                        "position": {
+                            "x": min(x_coords),
+                            "y": min(y_coords),
+                            "width": width,
+                            "height": height
+                        }
+                    })
+            
+            return text_blocks
+        except Exception as e:
+            logger.error(f"PaddleOCR檢測失敗: {e}")
+            return self._detect_text_direction_tesseract(image)
+    
+    def _detect_text_direction_tesseract(self, image: np.ndarray) -> List[Dict[str, Any]]:
+        """使用Tesseract檢測文本方向"""
+        try:
+            # 使用Tesseract檢測文本
+            tesseract_results = self.extract_text_tesseract(image, "horizontal")
+            
+            text_blocks = []
+            for result in tesseract_results:
+                # 簡單的方向判斷：基於文本框的長寬比
+                width = result["position"]["width"]
+                height = result["position"]["height"]
                 
-                # 計算文本框的長寬比和角度
-                x_coords = [point[0] for point in bbox]
-                y_coords = [point[1] for point in bbox]
-                
-                width = max(x_coords) - min(x_coords)
-                height = max(y_coords) - min(y_coords)
-                
-                # 判斷方向
                 if height > 0:
                     aspect_ratio = width / height
                     direction = "vertical" if aspect_ratio < self.vertical_threshold else "horizontal"
@@ -237,19 +283,17 @@ class OCRProcessor:
                     direction = "horizontal"
                 
                 text_blocks.append({
-                    "text": text,
-                    "confidence": confidence,
-                    "bbox": bbox,
+                    "text": result["text"],
+                    "confidence": result["confidence"],
+                    "bbox": [],  # Tesseract不提供bbox
                     "direction": direction,
-                    "position": {
-                        "x": min(x_coords),
-                        "y": min(y_coords),
-                        "width": width,
-                        "height": height
-                    }
+                    "position": result["position"]
                 })
-        
-        return text_blocks
+            
+            return text_blocks
+        except Exception as e:
+            logger.error(f"Tesseract方向檢測失敗: {e}")
+            return []
     
     def classify_text_type(self, text_block: Dict[str, Any], page_height: int) -> str:
         """分類文本類型 (標題、內文、表格、圖片說明等)"""
@@ -418,35 +462,42 @@ class OCRProcessor:
     
     def extract_text_paddle(self, image: np.ndarray) -> List[Dict[str, Any]]:
         """使用PaddleOCR提取文本"""
-        result = self.paddle_ocr.ocr(image, cls=True)
-        
-        if not result or not result[0]:
+        if self.paddle_ocr is None:
             return []
         
-        extracted_texts = []
-        for line in result[0]:
-            if len(line) >= 2:
-                bbox = line[0]
-                text = line[1][0]
-                confidence = line[1][1]
-                
-                # 計算文本位置
-                x_coords = [point[0] for point in bbox]
-                y_coords = [point[1] for point in bbox]
-                
-                extracted_texts.append({
-                    "text": text,
-                    "confidence": confidence,
-                    "bbox": bbox,
-                    "position": {
-                        "x": min(x_coords),
-                        "y": min(y_coords),
-                        "width": max(x_coords) - min(x_coords),
-                        "height": max(y_coords) - min(y_coords)
-                    }
-                })
-        
-        return extracted_texts
+        try:
+            result = self.paddle_ocr.ocr(image, cls=True)
+            
+            if not result or not result[0]:
+                return []
+            
+            extracted_texts = []
+            for line in result[0]:
+                if len(line) >= 2:
+                    bbox = line[0]
+                    text = line[1][0]
+                    confidence = line[1][1]
+                    
+                    # 計算文本位置
+                    x_coords = [point[0] for point in bbox]
+                    y_coords = [point[1] for point in bbox]
+                    
+                    extracted_texts.append({
+                        "text": text,
+                        "confidence": confidence,
+                        "bbox": bbox,
+                        "position": {
+                            "x": min(x_coords),
+                            "y": min(y_coords),
+                            "width": max(x_coords) - min(x_coords),
+                            "height": max(y_coords) - min(y_coords)
+                        }
+                    })
+            
+            return extracted_texts
+        except Exception as e:
+            logger.error(f"PaddleOCR文本提取失敗: {e}")
+            return []
     
     def extract_text_tesseract(self, image: np.ndarray, direction: str) -> List[Dict[str, Any]]:
         """使用高配置Tesseract提取文本 - 繁體中文優化"""
