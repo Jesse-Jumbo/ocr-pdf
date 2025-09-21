@@ -88,35 +88,10 @@ class OCRProcessor:
         if not self._paddle_initialized:
             with self._init_lock:
                 if not self._paddle_initialized:
-                    try:
-                        self.paddle_ocr = PaddleOCR(
-                            use_angle_cls=True,
-                            lang='ch',  # 中文（包含簡繁體）
-                            use_gpu=False,
-                            show_log=False,
-                            use_space_char=True,
-                            # 簡化配置，避免CPU指令集問題
-                            det_limit_side_len=960,  # 降低解析度限制
-                            det_limit_type='max',
-                            rec_batch_num=1,
-                            max_text_length=25,  # 降低最大文字長度
-                            rec_algorithm='CRNN',  # 使用更兼容的算法
-                            cls_thresh=0.9,
-                            det_thresh=0.1,  # 提高檢測閾值
-                            det_db_thresh=0.1,  # 提高DB閾值
-                            det_db_box_thresh=0.3,  # 提高框閾值
-                            det_db_unclip_ratio=1.5,  # 降低unclip比例
-                            det_algorithm='DB',
-                            use_dilation=False,  # 禁用膨脹，避免CPU問題
-                            det_db_score_mode='fast'
-                        )
-                        self._paddle_initialized = True
-                        logger.info("PaddleOCR初始化成功")
-                    except Exception as e:
-                        logger.error(f"PaddleOCR初始化失敗: {e}")
-                        logger.info("將只使用Tesseract進行OCR")
-                        self.paddle_ocr = None
-                        self._paddle_initialized = True  # 標記為已初始化，避免重複嘗試
+                    # 在Streamlit Cloud上完全禁用PaddleOCR，避免CPU指令集問題
+                    logger.info("在Streamlit Cloud環境中，將只使用Tesseract進行OCR")
+                    self.paddle_ocr = None
+                    self._paddle_initialized = True
     
     def _cleanup_memory(self):
         """清理記憶體，避免累積過多"""
@@ -140,6 +115,32 @@ class OCRProcessor:
         
         # 檢測每個文本塊的方向（圖像已預處理）
         text_blocks = self.detect_text_direction_per_block(image)
+        
+        # 如果PaddleOCR不可用，使用增強版Tesseract
+        if self.paddle_ocr is None and not text_blocks:
+            logger.info("使用增強版Tesseract進行OCR")
+            # 使用增強版Tesseract
+            tesseract_results = self.extract_text_tesseract_enhanced(image, "horizontal")
+            
+            # 轉換為text_blocks格式
+            text_blocks = []
+            for result in tesseract_results:
+                width = result["position"]["width"]
+                height = result["position"]["height"]
+                
+                if height > 0:
+                    aspect_ratio = width / height
+                    direction = "vertical" if aspect_ratio < self.vertical_threshold else "horizontal"
+                else:
+                    direction = "horizontal"
+                
+                text_blocks.append({
+                    "text": result["text"],
+                    "confidence": result["confidence"],
+                    "bbox": [],  # Tesseract不提供bbox
+                    "direction": direction,
+                    "position": result["position"]
+                })
         
         # 分類每個文本塊
         classified_blocks = []
@@ -544,6 +545,72 @@ class OCRProcessor:
         except Exception as e:
             logger.error(f"Tesseract OCR失敗: {e}")
             return []
+    
+    def extract_text_tesseract_enhanced(self, image: np.ndarray, direction: str) -> List[Dict[str, Any]]:
+        """增強版Tesseract OCR - 使用多種配置嘗試"""
+        results = []
+        
+        # 嘗試多種配置
+        configs = [
+            # 配置1：標準配置
+            '--psm 1 -c preserve_interword_spaces=1',
+            # 配置2：單列文本
+            '--psm 4 -c preserve_interword_spaces=1',
+            # 配置3：單行文本
+            '--psm 7 -c preserve_interword_spaces=1',
+            # 配置4：單詞
+            '--psm 8 -c preserve_interword_spaces=1'
+        ]
+        
+        lang = 'chi_tra+chi_sim+eng'
+        
+        for config in configs:
+            try:
+                data = pytesseract.image_to_data(image, lang=lang, config=config, output_type=pytesseract.Output.DICT)
+                
+                for i in range(len(data['text'])):
+                    text = data['text'][i].strip()
+                    confidence = int(data['conf'][i])
+                    
+                    if text and confidence > 20 and len(text) > 0:
+                        # 檢查是否與現有結果重疊
+                        is_duplicate = False
+                        for existing in results:
+                            if self._texts_overlap_simple(existing, {
+                                "x": data['left'][i],
+                                "y": data['top'][i],
+                                "width": data['width'][i],
+                                "height": data['height'][i]
+                            }):
+                                is_duplicate = True
+                                break
+                        
+                        if not is_duplicate:
+                            results.append({
+                                "text": text,
+                                "confidence": confidence / 100.0,
+                                "position": {
+                                    "x": data['left'][i],
+                                    "y": data['top'][i],
+                                    "width": data['width'][i],
+                                    "height": data['height'][i]
+                                }
+                            })
+            except Exception as e:
+                logger.warning(f"Tesseract配置 {config} 失敗: {e}")
+                continue
+        
+        return results
+    
+    def _texts_overlap_simple(self, text1: Dict, pos2: Dict) -> bool:
+        """簡單的重疊檢測"""
+        pos1 = text1["position"]
+        
+        # 簡單的重疊檢測
+        overlap_x = not (pos1["x"] + pos1["width"] < pos2["x"] or pos2["x"] + pos2["width"] < pos1["x"])
+        overlap_y = not (pos1["y"] + pos1["height"] < pos2["y"] or pos2["y"] + pos2["height"] < pos1["y"])
+        
+        return overlap_x and overlap_y
     
     def merge_ocr_results(self, paddle_results: List[Dict], tesseract_results: List[Dict]) -> List[Dict[str, Any]]:
         """合併PaddleOCR和Tesseract的結果"""
@@ -1028,7 +1095,8 @@ def main():
         st.write("**支持格式:** PDF")
         st.write("**支持語言:** 中文（簡體/繁體）")
         st.write("**文本方向:** 直式/橫式")
-        st.write("**OCR引擎:** PaddleOCR + Tesseract")
+        st.write("**OCR引擎:** Tesseract (增強版)")
+        st.info("ℹ️ 在Streamlit Cloud環境中，使用增強版Tesseract進行OCR處理")
         
         # 清除狀態按鈕
         st.markdown("### 🔧 系統控制")
