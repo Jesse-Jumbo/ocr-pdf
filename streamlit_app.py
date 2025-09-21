@@ -299,8 +299,8 @@ class TesseractOCR:
         return overlap_x and overlap_y
 
 
-def process_pdf_with_ocr(pdf_path: str, ocr_engine: str, dpi: int = 300) -> dict:
-    """使用Tesseract OCR處理PDF"""
+def process_pdf_with_ocr(pdf_path: str, ocr_engine: str, dpi: int = 300, progress_callback=None) -> dict:
+    """使用Tesseract OCR處理PDF - 支持即時回調"""
     try:
         # 只使用Tesseract
         ocr_processor = TesseractOCR()
@@ -320,6 +320,9 @@ def process_pdf_with_ocr(pdf_path: str, ocr_engine: str, dpi: int = 300) -> dict
         
         # 處理每一頁
         for page_num, image in enumerate(images, 1):
+            if progress_callback:
+                progress_callback(f"正在處理第 {page_num} 頁...", page_num, len(images))
+            
             texts = ocr_processor.extract_text(image)
             
             # 直接使用文本，保持原始格式
@@ -329,6 +332,10 @@ def process_pdf_with_ocr(pdf_path: str, ocr_engine: str, dpi: int = 300) -> dict
                 "full_text": "\n".join([block["text"] for block in texts])
             }
             result["pages"].append(page_result)
+            
+            # 即時回調，讓UI更新
+            if progress_callback:
+                progress_callback(f"第 {page_num} 頁處理完成", page_num, len(images), result)
         
         return result
         
@@ -386,7 +393,7 @@ def display_results(result: dict):
             else:
                 st.write("此頁面沒有識別到文本")
 
-def display_comparison_view(result: dict):
+def display_comparison_view(result: dict, pdf_images=None):
     """顯示對比視窗 - 原文件與識別結果並排顯示"""
     st.markdown("### 🔍 原文件與識別結果對比")
     
@@ -402,8 +409,11 @@ def display_comparison_view(result: dict):
         
         with col1:
             st.markdown("#### 📄 原文件")
-            # 這裡可以顯示原文件的圖像，但需要重新轉換
-            st.info("原文件圖像預覽功能需要重新上傳文件")
+            if pdf_images and selected_page_idx < len(pdf_images):
+                # 顯示原文件圖像
+                st.image(pdf_images[selected_page_idx], caption=f"第 {selected_page['page_number']} 頁", use_column_width=True)
+            else:
+                st.info("原文件圖像預覽功能需要重新上傳文件")
         
         with col2:
             st.markdown("#### 📝 識別結果")
@@ -418,7 +428,7 @@ def display_comparison_view(result: dict):
             st.markdown("#### 📄 完整文本")
             st.text_area("識別結果:", value=selected_page['full_text'], height=300, key=f"text_area_{selected_page_idx}")
 
-def download_text_file(result: dict):
+def download_text_file(result: dict, key_suffix: str = ""):
     """下載文本文件"""
     full_text = "\n\n".join([f"=== 第 {page['page_number']} 頁 ===" + "\n" + page['full_text'] for page in result["pages"]])
     
@@ -427,10 +437,10 @@ def download_text_file(result: dict):
         data=full_text,
         file_name=f"{result['file_name']}_text.txt",
         mime="text/plain",
-        key=f"download_txt_{int(time.time())}"
+        key=f"download_txt_{key_suffix}_{int(time.time())}"
     )
 
-def download_json_file(result: dict):
+def download_json_file(result: dict, key_suffix: str = ""):
     """下載JSON文件"""
     # 簡化的JSON格式（純文字）
     simplified_result = {
@@ -454,7 +464,7 @@ def download_json_file(result: dict):
         data=json_data,
         file_name=f"{result['file_name']}_ocr.json",
         mime="application/json",
-        key=f"download_json_{int(time.time())}"
+        key=f"download_json_{key_suffix}_{int(time.time())}"
     )
 
 def main():
@@ -482,6 +492,10 @@ def main():
         st.session_state.is_processing = False
     if 'history' not in st.session_state:
         st.session_state.history = []
+    if 'pdf_images' not in st.session_state:
+        st.session_state.pdf_images = None
+    if 'current_progress' not in st.session_state:
+        st.session_state.current_progress = None
     
     # 側邊欄
     with st.sidebar:
@@ -510,9 +524,9 @@ def main():
                             st.session_state.processing_results = item
                             st.session_state.current_file = item['file_name']
                     with col2:
-                        download_text_file(item)
+                        download_text_file(item, f"hist_{i}")
                     with col3:
-                        download_json_file(item)
+                        download_json_file(item, f"hist_{i}")
     
     # 主要內容
     st.markdown("### 📤 上傳PDF文件")
@@ -530,10 +544,10 @@ def main():
         col1, col2, col3 = st.columns([1, 1, 2])
         
         with col1:
-            download_text_file(st.session_state.processing_results)
+            download_text_file(st.session_state.processing_results, "main")
         
         with col2:
-            download_json_file(st.session_state.processing_results)
+            download_json_file(st.session_state.processing_results, "main")
         
         with col3:
             if st.button("🗑️ 清除結果", type="secondary"):
@@ -571,18 +585,52 @@ def main():
         if st.button("🚀 開始OCR處理", type="primary"):
             st.session_state.is_processing = True
             
-            # 創建進度條
+            # 創建進度條和狀態顯示
             progress_bar = st.progress(0)
             status_text = st.empty()
             
+            # 創建即時預覽區域
+            st.markdown("#### 🔄 即時處理預覽")
+            preview_col1, preview_col2 = st.columns(2)
+            
+            with preview_col1:
+                st.markdown("##### 📄 原文件")
+                # 轉換所有頁面為圖像
+                all_images = pdf2image.convert_from_path(tmp_file_path, dpi=150)
+                st.session_state.pdf_images = all_images
+                
+                # 顯示第一頁
+                if all_images:
+                    st.image(all_images[0], caption="第1頁", use_column_width=True)
+            
+            with preview_col2:
+                st.markdown("##### 📝 識別結果")
+                result_placeholder = st.empty()
+            
+            # 定義進度回調函數
+            def progress_callback(message, current_page, total_pages, partial_result=None):
+                progress = current_page / total_pages
+                progress_bar.progress(progress)
+                status_text.text(f"{message} ({current_page}/{total_pages})")
+                
+                # 即時更新識別結果
+                if partial_result and current_page > 0:
+                    with preview_col2:
+                        st.markdown("##### 📝 識別結果")
+                        for i, page in enumerate(partial_result["pages"]):
+                            if i < current_page:  # 只顯示已完成的頁面
+                                st.markdown(f"**第 {page['page_number']} 頁:**")
+                                st.text(page['full_text'][:200] + "..." if len(page['full_text']) > 200 else page['full_text'])
+                                st.markdown("---")
+                
+                # 更新原文件顯示
+                if current_page <= len(all_images):
+                    with preview_col1:
+                        st.markdown("##### 📄 原文件")
+                        st.image(all_images[current_page-1], caption=f"第{current_page}頁", use_column_width=True)
+            
             # 處理文件
-            status_text.text("正在處理PDF文件...")
-            progress_bar.progress(20)
-            
-            result = process_pdf_with_ocr(tmp_file_path, ocr_engine, dpi)
-            
-            progress_bar.progress(80)
-            status_text.text("正在整理結果...")
+            result = process_pdf_with_ocr(tmp_file_path, ocr_engine, dpi, progress_callback)
             
             # 清理臨時文件
             os.unlink(tmp_file_path)
@@ -611,7 +659,7 @@ def main():
     
     # 如果有處理結果，顯示對比視窗
     if st.session_state.processing_results and not st.session_state.is_processing:
-        display_comparison_view(st.session_state.processing_results)
+        display_comparison_view(st.session_state.processing_results, st.session_state.pdf_images)
     
     # 使用說明
     with st.expander("📚 使用說明"):
