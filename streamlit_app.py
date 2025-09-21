@@ -18,6 +18,14 @@ import logging
 import re
 
 # 延遲導入OCR相關庫，避免Streamlit Cloud部署問題
+OCR_AVAILABLE = True
+cv2 = None
+np = None
+Image = None
+pdf2image = None
+PaddleOCR = None
+pytesseract = None
+
 try:
     import cv2
     import numpy as np
@@ -25,9 +33,9 @@ try:
     import pdf2image
     from paddleocr import PaddleOCR
     import pytesseract
-    OCR_AVAILABLE = True
+    st.success("✅ 所有OCR依賴庫導入成功")
 except ImportError as e:
-    st.error(f"OCR依賴庫導入失敗: {e}")
+    st.error(f"❌ OCR依賴庫導入失敗: {e}")
     st.error("請確保所有依賴都已正確安裝")
     OCR_AVAILABLE = False
     # 設置空值避免後續錯誤
@@ -582,6 +590,17 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# 檢查依賴狀態
+if not OCR_AVAILABLE:
+    st.error("❌ OCR依賴庫未正確安裝，無法使用OCR功能")
+    st.markdown("### 請檢查以下依賴是否正確安裝：")
+    st.code("""
+    pip install streamlit numpy Pillow opencv-python-headless
+    pip install paddlepaddle paddleocr pytesseract
+    pip install pdf2image pandas tqdm
+    """)
+    st.stop()
 
 # 自定義CSS
 st.markdown("""
