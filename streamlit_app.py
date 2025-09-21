@@ -30,6 +30,13 @@ except ImportError as e:
     st.error(f"OCR依賴庫導入失敗: {e}")
     st.error("請確保所有依賴都已正確安裝")
     OCR_AVAILABLE = False
+    # 設置空值避免後續錯誤
+    cv2 = None
+    np = None
+    Image = None
+    pdf2image = None
+    PaddleOCR = None
+    pytesseract = None
 
 # 設置日誌
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -190,7 +197,7 @@ class OCRProcessor:
         
         return page_result, organized_texts
         
-    def pdf_to_images(self, pdf_path: str, dpi: int = 300) -> List[np.ndarray]:
+    def pdf_to_images(self, pdf_path: str, dpi: int = 300):
         """將PDF轉換為高質量圖像"""
         logger.info(f"正在轉換PDF: {pdf_path}")
         try:
@@ -218,7 +225,7 @@ class OCRProcessor:
             logger.error(f"PDF轉換失敗: {e}")
             return []
     
-    def detect_text_direction_per_block(self, image: np.ndarray) -> List[Dict[str, Any]]:
+    def detect_text_direction_per_block(self, image):
         """檢測每個文本塊的方向 (直式/橫式)"""
         # 使用PaddleOCR檢測文本方向
         result = self.paddle_ocr.ocr(image, cls=True)
@@ -306,7 +313,7 @@ class OCRProcessor:
         # 默認為內文
         return "content"
     
-    def preprocess_image(self, image: np.ndarray, direction: str, scale: float = 1.0) -> np.ndarray:
+    def preprocess_image(self, image, direction: str, scale: float = 1.0):
         """Chrome級別圖像預處理（含可選超解析）"""
         # 0. 可選超解析（高質量版）：LANCZOS4插值 + 銳化
         if scale and scale > 1.0:
@@ -409,7 +416,7 @@ class OCRProcessor:
                 pass
         return t
     
-    def rotate_if_needed(self, image: np.ndarray) -> np.ndarray:
+    def rotate_if_needed(self, image):
         """檢測並旋轉圖像"""
         # 使用Tesseract檢測角度
         try:
@@ -427,7 +434,7 @@ class OCRProcessor:
         
         return image
     
-    def extract_text_paddle(self, image: np.ndarray) -> List[Dict[str, Any]]:
+    def extract_text_paddle(self, image):
         """使用PaddleOCR提取文本"""
         result = self.paddle_ocr.ocr(image, cls=True)
         
@@ -459,7 +466,7 @@ class OCRProcessor:
         
         return extracted_texts
     
-    def extract_text_tesseract(self, image: np.ndarray, direction: str) -> List[Dict[str, Any]]:
+    def extract_text_tesseract(self, image, direction: str):
         """使用高配置Tesseract提取文本 - 繁體中文優化"""
         # 設置語言和配置 - 優先繁體中文
         lang = 'chi_tra+chi_sim+eng'  # 繁體中文+簡體中文+英文
