@@ -199,6 +199,10 @@ class OCRProcessor:
         
     def pdf_to_images(self, pdf_path: str, dpi: int = 300):
         """將PDF轉換為高質量圖像"""
+        if not pdf2image:
+            logger.error("pdf2image未正確安裝")
+            return []
+            
         logger.info(f"正在轉換PDF: {pdf_path}")
         try:
             # 使用更高的DPI和更好的轉換參數
@@ -220,7 +224,7 @@ class OCRProcessor:
                 use_pdftocairo=False,
                 timeout=600
             )
-            return [np.array(img) for img in images]
+            return [np.array(img) for img in images] if np else []
         except Exception as e:
             logger.error(f"PDF轉換失敗: {e}")
             return []
@@ -321,8 +325,9 @@ class OCRProcessor:
             new_h = int(image.shape[0] * scale)
             image = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
             # 使用更強的銳化核
-            kernel = np.array([[-1,-1,-1], [-1,12,-1], [-1,-1,-1]])
-            image = cv2.filter2D(image, -1, kernel)
+            kernel = np.array([[-1,-1,-1], [-1,12,-1], [-1,-1,-1]]) if np else None
+            if kernel is not None:
+                image = cv2.filter2D(image, -1, kernel)
         
         # 轉換為灰度圖
         if len(image.shape) == 3:
@@ -338,8 +343,11 @@ class OCRProcessor:
         enhanced = clahe.apply(denoised)
         
         # 3. 銳化 - 使用更強的銳化核
-        kernel = np.array([[-1,-1,-1], [-1,12,-1], [-1,-1,-1]])
-        sharpened = cv2.filter2D(enhanced, -1, kernel)
+        kernel = np.array([[-1,-1,-1], [-1,12,-1], [-1,-1,-1]]) if np else None
+        if kernel is not None:
+            sharpened = cv2.filter2D(enhanced, -1, kernel)
+        else:
+            sharpened = enhanced
         
         # 4. 邊緣增強
         edges = cv2.Canny(sharpened, 50, 150)
