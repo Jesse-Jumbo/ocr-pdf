@@ -13,16 +13,23 @@ from pathlib import Path
 import time
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-# OCR處理器類別
-import cv2
-import numpy as np
-from PIL import Image
-import pdf2image
-from paddleocr import PaddleOCR
-import pytesseract
 from typing import List, Dict, Any, Tuple
 import logging
 import re
+
+# 延遲導入OCR相關庫，避免Streamlit Cloud部署問題
+try:
+    import cv2
+    import numpy as np
+    from PIL import Image
+    import pdf2image
+    from paddleocr import PaddleOCR
+    import pytesseract
+    OCR_AVAILABLE = True
+except ImportError as e:
+    st.error(f"OCR依賴庫導入失敗: {e}")
+    st.error("請確保所有依賴都已正確安裝")
+    OCR_AVAILABLE = False
 
 # 設置日誌
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -31,6 +38,10 @@ logger = logging.getLogger(__name__)
 class OCRProcessor:
     def __init__(self):
         """初始化OCR處理器"""
+        if not OCR_AVAILABLE:
+            st.error("OCR依賴庫未正確安裝，無法初始化OCR處理器")
+            return
+            
         # 延遲初始化PaddleOCR，避免多執行緒衝突
         self.paddle_ocr = None
         self._paddle_initialized = False

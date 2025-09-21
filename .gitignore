@@ -54,3 +54,16 @@ Thumbs.db
 # data
 *.pdf
 *.txt
+*_classified.txt
+*_text.txt
+*_ocr.json
+*_stats.json
+
+# Large files
+*.zip
+*.tar.gz
+*.rar
+
+# Test files
+test_*
+*_test.*
