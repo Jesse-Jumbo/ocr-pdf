@@ -76,9 +76,7 @@ def main():
     # 檢查基本依賴
     basic_deps = {
         'streamlit': 'Web框架',
-        'numpy': '數值計算',
-        'Pillow': '圖像處理',
-        'pandas': '數據處理'
+        'numpy': '數值計算'
     }
     
     missing_deps = []
@@ -152,6 +150,8 @@ def main():
     st.markdown("### 🔍 OCR依賴檢查")
     
     ocr_deps = {
+        'PIL': 'Pillow圖像處理',
+        'pandas': '數據處理',
         'cv2': 'OpenCV圖像處理',
         'pdf2image': 'PDF轉圖像',
         'paddleocr': 'PaddleOCR引擎',
@@ -164,7 +164,11 @@ def main():
     
     for dep, desc in ocr_deps.items():
         try:
-            if dep == 'cv2':
+            if dep == 'PIL':
+                from PIL import Image
+            elif dep == 'pandas':
+                import pandas
+            elif dep == 'cv2':
                 import cv2
             elif dep == 'pdf2image':
                 import pdf2image
@@ -195,6 +199,7 @@ def main():
         st.warning("⚠️ OCR依賴未完全安裝，但基本功能可用")
         st.markdown("### OCR功能需要以下依賴：")
         st.code("""
+        pip install Pillow pandas
         pip install opencv-python-headless
         pip install pdf2image
         pip install paddlepaddle paddleocr
