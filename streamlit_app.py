@@ -386,13 +386,52 @@ def display_results(result: dict):
             else:
                 st.write("此頁面沒有識別到文本")
 
-def create_download_links(result: dict):
-    """創建下載鏈接"""
-    st.markdown("### 💾 下載結果")
+def display_comparison_view(result: dict):
+    """顯示對比視窗 - 原文件與識別結果並排顯示"""
+    st.markdown("### 🔍 原文件與識別結果對比")
     
-    # 生成唯一的時間戳
-    timestamp = int(time.time())
+    # 頁面選擇器
+    page_options = [f"第 {page['page_number']} 頁" for page in result["pages"]]
+    selected_page_idx = st.selectbox("選擇要查看的頁面:", range(len(page_options)), format_func=lambda x: page_options[x])
     
+    if selected_page_idx is not None:
+        selected_page = result["pages"][selected_page_idx]
+        
+        # 創建兩列布局
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("#### 📄 原文件")
+            # 這裡可以顯示原文件的圖像，但需要重新轉換
+            st.info("原文件圖像預覽功能需要重新上傳文件")
+        
+        with col2:
+            st.markdown("#### 📝 識別結果")
+            if selected_page["text_blocks"]:
+                # 顯示識別到的文本
+                for i, block in enumerate(selected_page["text_blocks"]):
+                    st.write(f"**{i+1}.** {block['text']}")
+            else:
+                st.write("此頁面沒有識別到文本")
+            
+            # 顯示完整文本
+            st.markdown("#### 📄 完整文本")
+            st.text_area("識別結果:", value=selected_page['full_text'], height=300, key=f"text_area_{selected_page_idx}")
+
+def download_text_file(result: dict):
+    """下載文本文件"""
+    full_text = "\n\n".join([f"=== 第 {page['page_number']} 頁 ===" + "\n" + page['full_text'] for page in result["pages"]])
+    
+    st.download_button(
+        label="📝 下載TXT文件",
+        data=full_text,
+        file_name=f"{result['file_name']}_text.txt",
+        mime="text/plain",
+        key=f"download_txt_{int(time.time())}"
+    )
+
+def download_json_file(result: dict):
+    """下載JSON文件"""
     # 簡化的JSON格式（純文字）
     simplified_result = {
         "file_name": result["file_name"],
@@ -408,31 +447,21 @@ def create_download_links(result: dict):
         }
         simplified_result["pages"].append(simplified_page)
     
-    # JSON下載
     json_data = json.dumps(simplified_result, ensure_ascii=False, indent=2)
+    
     st.download_button(
         label="📄 下載JSON文件",
         data=json_data,
         file_name=f"{result['file_name']}_ocr.json",
         mime="application/json",
-        key=f"download_json_{timestamp}"
-    )
-    
-    # 純文本下載
-    full_text = "\n\n".join([f"=== 第 {page['page_number']} 頁 ===" + "\n" + page['full_text'] for page in result["pages"]])
-    st.download_button(
-        label="📝 下載純文本文件",
-        data=full_text,
-        file_name=f"{result['file_name']}_text.txt",
-        mime="text/plain",
-        key=f"download_text_{timestamp}"
+        key=f"download_json_{int(time.time())}"
     )
 
 def main():
     """主函數"""
     # 標題
     st.markdown('<h1 class="main-header">📄 免費OCR文本識別系統</h1>', unsafe_allow_html=True)
-    st.markdown('<p class="sub-header">支持Tesseract和PaddleOCR兩種完全免費的OCR引擎</p>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-header">使用Tesseract OCR引擎，完全保留文字樣式和斷句</p>', unsafe_allow_html=True)
     
     # 檢查OCR可用性
     if not OCR_AVAILABLE:
@@ -440,10 +469,19 @@ def main():
         st.markdown("### 請檢查以下依賴是否正確安裝：")
         st.code("""
         pip install streamlit numpy Pillow opencv-python-headless
-        pip install paddlepaddle paddleocr pytesseract
-        pip install pdf2image
+        pip install pytesseract pdf2image
         """)
         st.stop()
+    
+    # 初始化session state
+    if 'processing_results' not in st.session_state:
+        st.session_state.processing_results = None
+    if 'current_file' not in st.session_state:
+        st.session_state.current_file = None
+    if 'is_processing' not in st.session_state:
+        st.session_state.is_processing = False
+    if 'history' not in st.session_state:
+        st.session_state.history = []
     
     # 側邊欄
     with st.sidebar:
@@ -460,6 +498,21 @@ def main():
         # 引擎信息
         st.markdown("### ℹ️ 引擎信息")
         st.info("**Tesseract OCR**\n- 完全免費\n- 穩定可靠\n- 支持多語言\n- 處理速度較快\n- 完全保留文字樣式和斷句\n- 優化的中文識別")
+        
+        # 歷史記錄
+        if st.session_state.history:
+            st.markdown("### 📚 歷史記錄")
+            for i, item in enumerate(st.session_state.history):
+                with st.expander(f"📄 {item['file_name']} ({item['total_pages']}頁)"):
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        if st.button("👁️ 預覽", key=f"preview_{i}"):
+                            st.session_state.processing_results = item
+                            st.session_state.current_file = item['file_name']
+                    with col2:
+                        download_text_file(item)
+                    with col3:
+                        download_json_file(item)
     
     # 主要內容
     st.markdown("### 📤 上傳PDF文件")
@@ -470,6 +523,23 @@ def main():
         type=['pdf'],
         help="支持中文文本的PDF文件"
     )
+    
+    # 如果有處理結果，顯示下載按鈕
+    if st.session_state.processing_results:
+        st.markdown("### 💾 下載結果")
+        col1, col2, col3 = st.columns([1, 1, 2])
+        
+        with col1:
+            download_text_file(st.session_state.processing_results)
+        
+        with col2:
+            download_json_file(st.session_state.processing_results)
+        
+        with col3:
+            if st.button("🗑️ 清除結果", type="secondary"):
+                st.session_state.processing_results = None
+                st.session_state.current_file = None
+                st.rerun()
     
     if uploaded_file is not None:
         # 顯示文件信息
@@ -483,12 +553,23 @@ def main():
         with col3:
             st.write(f"**OCR引擎:** {ocr_engine}")
         
+        # 文件預覽
+        st.markdown("#### 📄 文件預覽")
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
+            tmp_file.write(uploaded_file.getvalue())
+            tmp_file_path = tmp_file.name
+        
+        # 轉換PDF為圖像進行預覽
+        try:
+            images = pdf2image.convert_from_path(tmp_file_path, dpi=150, first_page=1, last_page=1)
+            if images:
+                st.image(images[0], caption="第一頁預覽", use_column_width=True)
+        except Exception as e:
+            st.warning(f"無法預覽文件: {e}")
+        
         # 處理按鈕
         if st.button("🚀 開始OCR處理", type="primary"):
-            # 保存上傳的文件到臨時目錄
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
-                tmp_file.write(uploaded_file.getvalue())
-                tmp_file_path = tmp_file.name
+            st.session_state.is_processing = True
             
             # 創建進度條
             progress_bar = st.progress(0)
@@ -508,14 +589,29 @@ def main():
             
             if "error" in result:
                 st.error(f"❌ {result['error']}")
+                st.session_state.is_processing = False
             else:
                 progress_bar.progress(100)
                 status_text.text("處理完成！")
                 st.success("✅ OCR處理完成！")
                 
-                # 顯示結果
-                display_results(result)
-                create_download_links(result)
+                # 保存結果到session state
+                st.session_state.processing_results = result
+                st.session_state.current_file = uploaded_file.name
+                
+                # 添加到歷史記錄
+                if result not in st.session_state.history:
+                    st.session_state.history.insert(0, result)
+                    # 限制歷史記錄數量
+                    if len(st.session_state.history) > 10:
+                        st.session_state.history = st.session_state.history[:10]
+                
+                st.session_state.is_processing = False
+                st.rerun()
+    
+    # 如果有處理結果，顯示對比視窗
+    if st.session_state.processing_results and not st.session_state.is_processing:
+        display_comparison_view(st.session_state.processing_results)
     
     # 使用說明
     with st.expander("📚 使用說明"):
@@ -526,12 +622,17 @@ def main():
         - **完全免費**: 所有功能完全免費，無需API密鑰
         - **中文優化**: 針對中文字體優化，完全保留文字樣式和斷句
         - **多格式輸出**: 支持JSON和文本格式下載
+        - **歷史記錄**: 保存處理歷史，方便重新下載
+        - **對比視窗**: 原文件與識別結果並排顯示
         
         #### 📋 使用步驟
         
         1. **上傳文件**: 選擇要處理的PDF文件
-        2. **開始處理**: 點擊"開始OCR處理"按鈕
-        3. **查看結果**: 查看識別結果和下載文件
+        2. **預覽文件**: 查看文件第一頁預覽
+        3. **開始處理**: 點擊"開始OCR處理"按鈕
+        4. **查看結果**: 在對比視窗中查看原文件與識別結果
+        5. **下載文件**: 下載TXT或JSON格式結果
+        6. **歷史記錄**: 在側邊欄查看和重新下載歷史結果
         
         #### ⚙️ 技術參數
         
