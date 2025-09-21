@@ -591,17 +591,6 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# 檢查依賴狀態
-if not OCR_AVAILABLE:
-    st.error("❌ OCR依賴庫未正確安裝，無法使用OCR功能")
-    st.markdown("### 請檢查以下依賴是否正確安裝：")
-    st.code("""
-    pip install streamlit numpy Pillow opencv-python-headless
-    pip install paddlepaddle paddleocr pytesseract
-    pip install pdf2image pandas tqdm
-    """)
-    st.stop()
-
 # 自定義CSS
 st.markdown("""
 <style>
@@ -994,6 +983,17 @@ def create_download_links(result):
 
 def main():
     """主函數"""
+    # 檢查依賴狀態
+    if not OCR_AVAILABLE:
+        st.error("❌ OCR依賴庫未正確安裝，無法使用OCR功能")
+        st.markdown("### 請檢查以下依賴是否正確安裝：")
+        st.code("""
+        pip install streamlit numpy Pillow opencv-python-headless
+        pip install paddlepaddle paddleocr pytesseract
+        pip install pdf2image pandas tqdm
+        """)
+        st.stop()
+    
     init_session_state()
     
     # 標題
