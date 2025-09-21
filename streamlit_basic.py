@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-基本版OCR Web應用 - 只使用Streamlit Cloud支持的依賴
+OCR Web應用 - Streamlit Cloud版本
 """
 
 import streamlit as st
