@@ -1,94 +1,112 @@
-# 📄 OCR文本識別Web應用
+# 免費OCR文本識別系統
 
-一個基於Streamlit的Web應用，專門用於處理中文PDF文件的OCR識別，支援直式和橫式文本。
+一個完全免費的Streamlit OCR應用，支持Tesseract和PaddleOCR兩種OCR引擎。
 
 ## ✨ 功能特點
 
-- **🌐 Web界面**: 現代化響應式設計，無需命令行
-- **🔧 雙引擎OCR**: 結合PaddleOCR和Tesseract，提高識別準確度
-- **📐 方向檢測**: 自動檢測直式/橫式文本
-- **🇨🇳 中文優化**: 針對中文字體優化
-- **📊 實時進度**: 處理過程可視化
-- **💾 多格式輸出**: JSON、純文本、統計報告
-- **☁️ 雲端部署**: 支持多種部署平台
+- **雙引擎支持**: 支持Tesseract和PaddleOCR兩種OCR引擎
+- **完全免費**: 所有功能完全免費，無需API密鑰
+- **中文優化**: 針對中文字體優化
+- **多格式輸出**: 支持JSON和文本格式下載
+- **即時處理**: 實時顯示OCR處理進度
 
 ## 🚀 快速開始
 
 ### 本地運行
-```bash
-# 一鍵啟動
-./run_web_app.sh
 
-# 或手動啟動
-source ocr_env/bin/activate
-streamlit run streamlit_app.py
-```
+1. **克隆項目**
+   ```bash
+   git clone https://github.com/your-username/free-ocr-app.git
+   cd free-ocr-app
+   ```
 
-### 雲端部署
-查看 [QUICK_DEPLOY.md](QUICK_DEPLOY.md) 了解詳細部署步驟。
+2. **安裝依賴**
+   ```bash
+   # 安裝Python依賴
+   pip install -r requirements_new.txt
+   
+   # 安裝系統依賴 (macOS)
+   brew install tesseract poppler
+   
+   # 安裝系統依賴 (Ubuntu/Debian)
+   sudo apt-get install tesseract-ocr tesseract-ocr-chi-tra tesseract-ocr-chi-sim poppler-utils
+   ```
+
+3. **運行應用**
+   ```bash
+   streamlit run streamlit_app_new.py
+   ```
+
+### Streamlit Cloud部署
+
+1. **Fork此項目**到你的GitHub帳戶
+
+2. **在Streamlit Cloud上部署**:
+   - 前往 [Streamlit Cloud](https://share.streamlit.io/)
+   - 點擊 "New app"
+   - 選擇你的GitHub倉庫
+   - 設置:
+     - Main file path: `streamlit_app_new.py`
+     - Requirements file: `requirements_new.txt`
+     - Packages file: `packages_new.txt`
+
+3. **部署完成**後即可使用
 
 ## 📖 使用說明
 
-### Web界面操作
-1. **上傳文件**: 在"上傳處理"頁面選擇PDF文件
-2. **開始處理**: 點擊"開始OCR處理"按鈕
-3. **查看進度**: 實時查看處理進度和狀態
-4. **瀏覽結果**: 在"結果查看"頁面查看識別結果
-5. **下載數據**: 下載JSON、文本或統計報告
+1. **選擇OCR引擎**: 在側邊欄選擇Tesseract或PaddleOCR
+2. **上傳文件**: 選擇要處理的PDF文件
+3. **開始處理**: 點擊"開始OCR處理"按鈕
+4. **查看結果**: 查看識別結果和下載文件
 
-### 支持的格式
-- **輸入**: PDF文件
-- **輸出**: JSON、純文本、統計報告
-- **語言**: 簡體中文、繁體中文、英文
-- **方向**: 直式、橫式文本
+## 🔧 OCR引擎比較
 
-## 🛠️ 技術架構
+| 引擎 | 優點 | 缺點 | 適用場景 |
+|------|------|------|----------|
+| Tesseract | 穩定可靠、處理速度快 | 中文識別準確度一般 | 一般文檔處理 |
+| PaddleOCR | 中文識別準確度高 | 處理速度較慢 | 中文文檔處理 |
 
-- **前端**: Streamlit Web框架
-- **OCR引擎**: PaddleOCR + Tesseract
-- **圖像處理**: OpenCV + PIL
-- **PDF處理**: pdf2image + poppler
-- **部署**: 支持Docker、Streamlit Cloud、Railway等
+## 📁 項目結構
 
-## 📊 輸出格式
-
-每個PDF會生成包含以下信息的JSON文件：
-
-```json
-{
-  "file_name": "文件名.pdf",
-  "total_pages": 頁數,
-  "pages": [
-    {
-      "page_number": 1,
-      "text_direction": "vertical|horizontal",
-      "total_text_blocks": 文本塊數量,
-      "text_blocks": [
-        {
-          "text": "識別的文字",
-          "confidence": 0.95,
-          "position": {"x": 100, "y": 200, "width": 50, "height": 20},
-          "source": "paddle|tesseract"
-        }
-      ],
-      "full_text": "完整頁面文字"
-    }
-  ]
-}
+```
+free-ocr-app/
+├── streamlit_app_new.py      # 主應用程式
+├── requirements_new.txt      # Python依賴
+├── packages_new.txt         # 系統依賴
+├── README_new.md           # 說明文檔
+└── .gitignore              # Git忽略文件
 ```
 
-## 🔧 技術細節
+## 🛠️ 技術棧
 
-- **PaddleOCR**: 主要用於中文識別，準確度高
-- **Tesseract**: 輔助識別，提高覆蓋率
-- **方向檢測**: 基於文本塊長寬比智能判斷
-- **圖像預處理**: 去噪、二值化、角度校正
-- **結果合併**: 智能合併雙引擎結果，避免重複
+- **前端**: Streamlit
+- **OCR引擎**: Tesseract, PaddleOCR
+- **圖像處理**: OpenCV, PIL
+- **PDF處理**: pdf2image
+- **部署**: Streamlit Cloud
 
-## 📝 授權
+## 📝 開發說明
 
-MIT License - 可自由使用和修改
+### 添加新的OCR引擎
+
+1. 在`streamlit_app_new.py`中創建新的OCR類
+2. 實現`pdf_to_images`和`extract_text`方法
+3. 在`process_pdf_with_ocr`函數中添加新引擎選項
+
+### 自定義圖像預處理
+
+修改`TesseractOCR.preprocess_image`或`PaddleOCRProcessor`中的預處理邏輯。
 
 ## 🤝 貢獻
 
-歡迎提交Issue和Pull Request來改進這個項目！
+歡迎提交Issue和Pull Request！
+
+## 📄 許可證
+
+MIT License - 完全免費使用
+
+## 🙏 致謝
+
+- [Tesseract OCR](https://github.com/tesseract-ocr/tesseract)
+- [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR)
+- [Streamlit](https://streamlit.io/)
