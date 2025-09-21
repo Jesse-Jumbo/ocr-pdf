@@ -111,8 +111,8 @@ def main():
             elif dep == 'pytesseract':
                 import pytesseract
             available_deps.append(f"✅ {dep} - {desc}")
-        except ImportError:
-            missing_deps.append(f"❌ {dep} - {desc}")
+        except ImportError as e:
+            missing_deps.append(f"❌ {dep} - {desc} (錯誤: {str(e)})")
             ocr_available = False
     
     # 顯示結果
@@ -138,6 +138,25 @@ def main():
         pip install paddlepaddle paddleocr pytesseract
         pip install pdf2image pandas tqdm
         """)
+        
+        # 添加診斷信息
+        st.markdown("### 🔍 診斷信息：")
+        st.info("如果依賴仍然無法安裝，可能的原因：")
+        st.markdown("""
+        1. **Streamlit Cloud限制**：某些依賴可能被限制
+        2. **Python版本不兼容**：嘗試使用Python 3.9或3.10
+        3. **依賴衝突**：某些包版本可能衝突
+        4. **系統依賴缺失**：需要packages.txt安裝系統依賴
+        """)
+        
+        st.markdown("### 📋 建議的解決方案：")
+        st.markdown("""
+        1. **檢查packages.txt**：確保包含poppler-utils
+        2. **使用requirements_minimal.txt**：更簡單的依賴列表
+        3. **嘗試不同Python版本**：3.9, 3.10, 3.11
+        4. **檢查Streamlit Cloud日誌**：查看詳細錯誤信息
+        """)
+        
         st.markdown("</div>", unsafe_allow_html=True)
         st.stop()
     
