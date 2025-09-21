@@ -116,11 +116,11 @@ class OCRProcessor:
         # 檢測每個文本塊的方向（圖像已預處理）
         text_blocks = self.detect_text_direction_per_block(image)
         
-        # 如果PaddleOCR不可用，使用增強版Tesseract
+        # 如果PaddleOCR不可用，使用Chrome風格的OCR
         if self.paddle_ocr is None and not text_blocks:
-            logger.info("使用增強版Tesseract進行OCR")
-            # 使用增強版Tesseract
-            tesseract_results = self.extract_text_tesseract_enhanced(image, "horizontal")
+            logger.info("使用Chrome風格OCR進行文本識別")
+            # 使用Chrome風格的OCR
+            tesseract_results = self.extract_text_chrome_style(image, "horizontal")
             
             # 轉換為text_blocks格式
             text_blocks = []
@@ -501,20 +501,20 @@ class OCRProcessor:
             return []
     
     def extract_text_tesseract(self, image: np.ndarray, direction: str) -> List[Dict[str, Any]]:
-        """使用高配置Tesseract提取文本 - 繁體中文優化"""
-        # 設置語言和配置 - 優先繁體中文
-        lang = 'chi_tra+chi_sim+eng'  # 繁體中文+簡體中文+英文
+        """Chrome風格的Tesseract OCR - 高精度配置"""
+        # Chrome風格的語言配置
+        lang = 'chi_tra+chi_sim+eng'
         
-        # 使用更精確的PSM模式
+        # Chrome風格的PSM配置 - 更智能的頁面分割
         if direction == "vertical":
-            # 直式文本配置 - 使用單行文本模式
-            config = '--psm 7 -c preserve_interword_spaces=1 -c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz一二三四五六七八九十百千萬億零壹貳參肆伍陸柒捌玖拾佰仟萬億'
+            # 直式文本：使用單列文本模式
+            config = '--psm 4 -c preserve_interword_spaces=1 -c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz一二三四五六七八九十百千萬億零壹貳參肆伍陸柒捌玖拾佰仟萬億'
         else:
-            # 橫式文本配置 - 使用自動頁面分割模式
-            config = '--psm 1 -c preserve_interword_spaces=1 -c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz一二三四五六七八九十百千萬億零壹貳參肆伍陸柒捌玖拾佰仟萬億'
+            # 橫式文本：使用自動頁面分割，但更保守
+            config = '--psm 3 -c preserve_interword_spaces=1 -c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz一二三四五六七八九十百千萬億零壹貳參肆伍陸柒捌玖拾佰仟萬億'
         
         try:
-            # 獲取詳細信息
+            # 使用Chrome風格的數據提取
             data = pytesseract.image_to_data(image, lang=lang, config=config, output_type=pytesseract.Output.DICT)
             
             extracted_texts = []
@@ -524,10 +524,14 @@ class OCRProcessor:
                 text = data['text'][i].strip()
                 confidence = int(data['conf'][i])
                 
-                # 大幅降低置信度閾值，檢測更多文字
-                if text and confidence > 10 and len(text) > 0:
+                # Chrome風格的置信度過濾 - 更嚴格
+                if text and confidence > 30 and len(text) > 0:
+                    # 過濾單字符低置信度結果
+                    if len(text) == 1 and confidence < 60:
+                        continue
+                    
                     # 過濾明顯的噪點
-                    if len(text) == 1 and confidence < 30:
+                    if len(text) < 2 and confidence < 50:
                         continue
                     
                     extracted_texts.append({
@@ -547,19 +551,19 @@ class OCRProcessor:
             return []
     
     def extract_text_tesseract_enhanced(self, image: np.ndarray, direction: str) -> List[Dict[str, Any]]:
-        """增強版Tesseract OCR - 使用多種配置嘗試"""
+        """Chrome風格的增強版Tesseract OCR - 多配置優化"""
         results = []
         
-        # 嘗試多種配置
+        # Chrome風格的配置組合
         configs = [
-            # 配置1：標準配置
-            '--psm 1 -c preserve_interword_spaces=1',
-            # 配置2：單列文本
-            '--psm 4 -c preserve_interword_spaces=1',
-            # 配置3：單行文本
-            '--psm 7 -c preserve_interword_spaces=1',
-            # 配置4：單詞
-            '--psm 8 -c preserve_interword_spaces=1'
+            # 配置1：Chrome標準配置 - 自動頁面分割
+            '--psm 3 -c preserve_interword_spaces=1 -c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz一二三四五六七八九十百千萬億零壹貳參肆伍陸柒捌玖拾佰仟萬億',
+            # 配置2：單列文本 - 適合直式
+            '--psm 4 -c preserve_interword_spaces=1 -c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz一二三四五六七八九十百千萬億零壹貳參肆伍陸柒捌玖拾佰仟萬億',
+            # 配置3：單行文本 - 適合標題
+            '--psm 7 -c preserve_interword_spaces=1 -c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz一二三四五六七八九十百千萬億零壹貳參肆伍陸柒捌玖拾佰仟萬億',
+            # 配置4：單詞模式 - 適合短文本
+            '--psm 8 -c preserve_interword_spaces=1 -c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz一二三四五六七八九十百千萬億零壹貳參肆伍陸柒捌玖拾佰仟萬億'
         ]
         
         lang = 'chi_tra+chi_sim+eng'
@@ -572,7 +576,16 @@ class OCRProcessor:
                     text = data['text'][i].strip()
                     confidence = int(data['conf'][i])
                     
-                    if text and confidence > 20 and len(text) > 0:
+                    # Chrome風格的嚴格過濾
+                    if text and confidence > 25 and len(text) > 0:
+                        # 過濾單字符低置信度
+                        if len(text) == 1 and confidence < 50:
+                            continue
+                        
+                        # 過濾短文本低置信度
+                        if len(text) < 3 and confidence < 40:
+                            continue
+                        
                         # 檢查是否與現有結果重疊
                         is_duplicate = False
                         for existing in results:
@@ -611,6 +624,112 @@ class OCRProcessor:
         overlap_y = not (pos1["y"] + pos1["height"] < pos2["y"] or pos2["y"] + pos2["height"] < pos1["y"])
         
         return overlap_x and overlap_y
+    
+    def extract_text_chrome_style(self, image: np.ndarray, direction: str) -> List[Dict[str, Any]]:
+        """Chrome風格的OCR - 使用最佳配置組合"""
+        results = []
+        
+        # Chrome風格的圖像預處理
+        processed_image = self._chrome_preprocess_image(image, direction)
+        
+        # 嘗試多種Chrome風格的配置
+        configs = [
+            # 配置1：Chrome標準 - 自動頁面分割
+            {
+                'psm': 3,
+                'config': '--psm 3 -c preserve_interword_spaces=1 -c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz一二三四五六七八九十百千萬億零壹貳參肆伍陸柒捌玖拾佰仟萬億'
+            },
+            # 配置2：單列文本 - 適合直式
+            {
+                'psm': 4,
+                'config': '--psm 4 -c preserve_interword_spaces=1 -c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz一二三四五六七八九十百千萬億零壹貳參肆伍陸柒捌玖拾佰仟萬億'
+            },
+            # 配置3：單行文本 - 適合標題
+            {
+                'psm': 7,
+                'config': '--psm 7 -c preserve_interword_spaces=1 -c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz一二三四五六七八九十百千萬億零壹貳參肆伍陸柒捌玖拾佰仟萬億'
+            }
+        ]
+        
+        lang = 'chi_tra+chi_sim+eng'
+        
+        for config in configs:
+            try:
+                data = pytesseract.image_to_data(processed_image, lang=lang, config=config['config'], output_type=pytesseract.Output.DICT)
+                
+                for i in range(len(data['text'])):
+                    text = data['text'][i].strip()
+                    confidence = int(data['conf'][i])
+                    
+                    # Chrome風格的嚴格過濾
+                    if text and confidence > 30 and len(text) > 0:
+                        # 過濾單字符低置信度
+                        if len(text) == 1 and confidence < 60:
+                            continue
+                        
+                        # 過濾短文本低置信度
+                        if len(text) < 2 and confidence < 50:
+                            continue
+                        
+                        # 檢查是否與現有結果重疊
+                        is_duplicate = False
+                        for existing in results:
+                            if self._texts_overlap_simple(existing, {
+                                "x": data['left'][i],
+                                "y": data['top'][i],
+                                "width": data['width'][i],
+                                "height": data['height'][i]
+                            }):
+                                is_duplicate = True
+                                break
+                        
+                        if not is_duplicate:
+                            results.append({
+                                "text": text,
+                                "confidence": confidence / 100.0,
+                                "position": {
+                                    "x": data['left'][i],
+                                    "y": data['top'][i],
+                                    "width": data['width'][i],
+                                    "height": data['height'][i]
+                                }
+                            })
+            except Exception as e:
+                logger.warning(f"Chrome風格配置 {config['psm']} 失敗: {e}")
+                continue
+        
+        return results
+    
+    def _chrome_preprocess_image(self, image: np.ndarray, direction: str) -> np.ndarray:
+        """Chrome風格的圖像預處理"""
+        # 1. 轉換為灰度
+        if len(image.shape) == 3:
+            gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+        else:
+            gray = image.copy()
+        
+        # 2. 去噪 - Chrome風格
+        denoised = cv2.fastNlMeansDenoising(gray, None, h=10, templateWindowSize=7, searchWindowSize=21)
+        
+        # 3. 對比度增強 - Chrome風格
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+        enhanced = clahe.apply(denoised)
+        
+        # 4. 銳化 - Chrome風格
+        kernel = np.array([[-1,-1,-1], [-1,9,-1], [-1,-1,-1]])
+        sharpened = cv2.filter2D(enhanced, -1, kernel)
+        
+        # 5. 二值化 - Chrome風格
+        binary = cv2.adaptiveThreshold(
+            sharpened, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+            cv2.THRESH_BINARY, 11, 2
+        )
+        
+        # 6. 形態學操作 - Chrome風格
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 1))
+        binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+        
+        return binary
     
     def merge_ocr_results(self, paddle_results: List[Dict], tesseract_results: List[Dict]) -> List[Dict[str, Any]]:
         """合併PaddleOCR和Tesseract的結果"""
@@ -990,7 +1109,7 @@ def create_download_links(result):
         data=json_data,
         file_name=f"{result['file_name']}_ocr.json",
         mime="application/json",
-        key="download_json"
+        key=f"download_json_{result['file_name']}"
     )
     
     # 按類型分類的文本下載
@@ -1013,7 +1132,7 @@ def create_download_links(result):
         data=classified_text,
         file_name=f"{result['file_name']}_classified.txt",
         mime="text/plain",
-        key="download_classified"
+        key=f"download_classified_{result['file_name']}"
     )
     
     # 純文本下載
@@ -1023,7 +1142,7 @@ def create_download_links(result):
         data=full_text,
         file_name=f"{result['file_name']}_text.txt",
         mime="text/plain",
-        key="download_text"
+        key=f"download_text_{result['file_name']}"
     )
     
     # 統計報告下載
@@ -1062,7 +1181,7 @@ def create_download_links(result):
         data=stats_json,
         file_name=f"{result['file_name']}_stats.json",
         mime="application/json",
-        key="download_stats"
+        key=f"download_stats_{result['file_name']}"
     )
 
 def main():
@@ -1095,8 +1214,8 @@ def main():
         st.write("**支持格式:** PDF")
         st.write("**支持語言:** 中文（簡體/繁體）")
         st.write("**文本方向:** 直式/橫式")
-        st.write("**OCR引擎:** Tesseract (增強版)")
-        st.info("ℹ️ 在Streamlit Cloud環境中，使用增強版Tesseract進行OCR處理")
+        st.write("**OCR引擎:** Tesseract (Chrome風格)")
+        st.info("ℹ️ 在Streamlit Cloud環境中，使用Chrome風格的Tesseract進行OCR處理")
         
         # 清除狀態按鈕
         st.markdown("### 🔧 系統控制")
