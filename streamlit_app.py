@@ -13,38 +13,16 @@ from pathlib import Path
 import time
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+# OCR處理器類別
+import cv2
+import numpy as np
+from PIL import Image
+import pdf2image
+from paddleocr import PaddleOCR
+import pytesseract
 from typing import List, Dict, Any, Tuple
 import logging
 import re
-
-# 延遲導入OCR相關庫，避免Streamlit Cloud部署問題
-OCR_AVAILABLE = True
-cv2 = None
-np = None
-Image = None
-pdf2image = None
-PaddleOCR = None
-pytesseract = None
-
-try:
-    import cv2
-    import numpy as np
-    from PIL import Image
-    import pdf2image
-    from paddleocr import PaddleOCR
-    import pytesseract
-    st.success("✅ 所有OCR依賴庫導入成功")
-except ImportError as e:
-    st.error(f"❌ OCR依賴庫導入失敗: {e}")
-    st.error("請確保所有依賴都已正確安裝")
-    OCR_AVAILABLE = False
-    # 設置空值避免後續錯誤
-    cv2 = None
-    np = None
-    Image = None
-    pdf2image = None
-    PaddleOCR = None
-    pytesseract = None
 
 # 設置日誌
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -53,10 +31,6 @@ logger = logging.getLogger(__name__)
 class OCRProcessor:
     def __init__(self):
         """初始化OCR處理器"""
-        if not OCR_AVAILABLE:
-            st.error("OCR依賴庫未正確安裝，無法初始化OCR處理器")
-            return
-            
         # 延遲初始化PaddleOCR，避免多執行緒衝突
         self.paddle_ocr = None
         self._paddle_initialized = False
@@ -205,12 +179,8 @@ class OCRProcessor:
         
         return page_result, organized_texts
         
-    def pdf_to_images(self, pdf_path: str, dpi: int = 300):
+    def pdf_to_images(self, pdf_path: str, dpi: int = 300) -> List[np.ndarray]:
         """將PDF轉換為高質量圖像"""
-        if not pdf2image:
-            logger.error("pdf2image未正確安裝")
-            return []
-            
         logger.info(f"正在轉換PDF: {pdf_path}")
         try:
             # 使用更高的DPI和更好的轉換參數
@@ -232,12 +202,12 @@ class OCRProcessor:
                 use_pdftocairo=False,
                 timeout=600
             )
-            return [np.array(img) for img in images] if np else []
+            return [np.array(img) for img in images]
         except Exception as e:
             logger.error(f"PDF轉換失敗: {e}")
             return []
     
-    def detect_text_direction_per_block(self, image):
+    def detect_text_direction_per_block(self, image: np.ndarray) -> List[Dict[str, Any]]:
         """檢測每個文本塊的方向 (直式/橫式)"""
         # 使用PaddleOCR檢測文本方向
         result = self.paddle_ocr.ocr(image, cls=True)
@@ -325,7 +295,7 @@ class OCRProcessor:
         # 默認為內文
         return "content"
     
-    def preprocess_image(self, image, direction: str, scale: float = 1.0):
+    def preprocess_image(self, image: np.ndarray, direction: str, scale: float = 1.0) -> np.ndarray:
         """Chrome級別圖像預處理（含可選超解析）"""
         # 0. 可選超解析（高質量版）：LANCZOS4插值 + 銳化
         if scale and scale > 1.0:
@@ -333,9 +303,8 @@ class OCRProcessor:
             new_h = int(image.shape[0] * scale)
             image = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
             # 使用更強的銳化核
-            kernel = np.array([[-1,-1,-1], [-1,12,-1], [-1,-1,-1]]) if np else None
-            if kernel is not None:
-                image = cv2.filter2D(image, -1, kernel)
+            kernel = np.array([[-1,-1,-1], [-1,12,-1], [-1,-1,-1]])
+            image = cv2.filter2D(image, -1, kernel)
         
         # 轉換為灰度圖
         if len(image.shape) == 3:
@@ -351,11 +320,8 @@ class OCRProcessor:
         enhanced = clahe.apply(denoised)
         
         # 3. 銳化 - 使用更強的銳化核
-        kernel = np.array([[-1,-1,-1], [-1,12,-1], [-1,-1,-1]]) if np else None
-        if kernel is not None:
-            sharpened = cv2.filter2D(enhanced, -1, kernel)
-        else:
-            sharpened = enhanced
+        kernel = np.array([[-1,-1,-1], [-1,12,-1], [-1,-1,-1]])
+        sharpened = cv2.filter2D(enhanced, -1, kernel)
         
         # 4. 邊緣增強
         edges = cv2.Canny(sharpened, 50, 150)
@@ -432,7 +398,7 @@ class OCRProcessor:
                 pass
         return t
     
-    def rotate_if_needed(self, image):
+    def rotate_if_needed(self, image: np.ndarray) -> np.ndarray:
         """檢測並旋轉圖像"""
         # 使用Tesseract檢測角度
         try:
@@ -450,7 +416,7 @@ class OCRProcessor:
         
         return image
     
-    def extract_text_paddle(self, image):
+    def extract_text_paddle(self, image: np.ndarray) -> List[Dict[str, Any]]:
         """使用PaddleOCR提取文本"""
         result = self.paddle_ocr.ocr(image, cls=True)
         
@@ -482,7 +448,7 @@ class OCRProcessor:
         
         return extracted_texts
     
-    def extract_text_tesseract(self, image, direction: str):
+    def extract_text_tesseract(self, image: np.ndarray, direction: str) -> List[Dict[str, Any]]:
         """使用高配置Tesseract提取文本 - 繁體中文優化"""
         # 設置語言和配置 - 優先繁體中文
         lang = 'chi_tra+chi_sim+eng'  # 繁體中文+簡體中文+英文
@@ -983,17 +949,6 @@ def create_download_links(result):
 
 def main():
     """主函數"""
-    # 檢查依賴狀態
-    if not OCR_AVAILABLE:
-        st.error("❌ OCR依賴庫未正確安裝，無法使用OCR功能")
-        st.markdown("### 請檢查以下依賴是否正確安裝：")
-        st.code("""
-        pip install streamlit numpy Pillow opencv-python-headless
-        pip install paddlepaddle paddleocr pytesseract
-        pip install pdf2image pandas tqdm
-        """)
-        st.stop()
-    
     init_session_state()
     
     # 標題
