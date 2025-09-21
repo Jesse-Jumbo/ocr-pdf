@@ -53,11 +53,15 @@ Thumbs.db
 
 # data
 *.pdf
-*.txt
 *_classified.txt
 *_text.txt
 *_ocr.json
 *_stats.json
+
+# Keep important txt files
+!requirements.txt
+!packages.txt
+!README*.txt
 
 # Large files
 *.zip
