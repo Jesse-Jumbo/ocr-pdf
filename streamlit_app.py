@@ -117,80 +117,101 @@ class TesseractOCR:
         return binary
     
     def extract_text(self, image: np.ndarray) -> list:
-        """使用Tesseract提取文本 - 修正斷句問題"""
+        """使用Tesseract提取文本 - 完全保留文字樣式和斷句"""
         try:
             # 預處理圖像
             processed_image = self.preprocess_image(image)
             
-            # 使用更適合的配置來避免斷句問題
-            configs = [
-                '--psm 3 -c preserve_interword_spaces=1 -c textord_min_linesize=2.0',  # 自動頁面分割，最小行高
-                '--psm 4 -c preserve_interword_spaces=1 -c textord_min_linesize=2.0',  # 單列文本，最小行高
-                '--psm 6 -c preserve_interword_spaces=1 -c textord_min_linesize=2.0',  # 單一文本塊，最小行高
-            ]
-            
+            # 使用最佳配置來保持文字樣式和斷句
+            config = '--psm 3 -c preserve_interword_spaces=1 -c textord_min_linesize=1.5'
             lang = 'chi_tra+chi_sim+eng'  # 繁體中文+簡體中文+英文
-            all_texts = []
             
-            for config in configs:
-                try:
-                    # 先嘗試獲取文本（不分詞）
-                    text_result = pytesseract.image_to_string(
-                        processed_image, 
-                        lang=lang, 
-                        config=config
-                    )
-                    
-                    # 再獲取詳細數據用於位置信息
-                    data = pytesseract.image_to_data(
-                        processed_image, 
-                        lang=lang, 
-                        config=config, 
-                        output_type=pytesseract.Output.DICT
-                    )
-                    
-                    # 處理文本結果，按行分割
-                    lines = text_result.strip().split('\n')
-                    line_idx = 0
-                    
-                    for i in range(len(data['text'])):
-                        text = data['text'][i].strip()
-                        confidence = int(data['conf'][i])
-                        
-                        if text and confidence > 30 and len(text) > 0:
-                            # 如果文本太短，嘗試與下一行合併
-                            if len(text) < 3 and line_idx < len(lines) - 1:
-                                # 檢查是否為連續文本
-                                current_line = lines[line_idx] if line_idx < len(lines) else ""
-                                next_line = lines[line_idx + 1] if line_idx + 1 < len(lines) else ""
-                                
-                                # 合併短文本
-                                if current_line and next_line:
-                                    combined_text = current_line + next_line
-                                    if len(combined_text) > len(text):
-                                        text = combined_text
-                                        line_idx += 1
-                            
-                            all_texts.append({
-                                "text": text,
-                                "confidence": confidence / 100.0,
+            # 直接獲取文本，保持原始格式
+            text_result = pytesseract.image_to_string(
+                processed_image, 
+                lang=lang, 
+                config=config
+            )
+            
+            # 按行分割文本，保持原始斷句
+            lines = text_result.strip().split('\n')
+            
+            # 獲取詳細數據用於位置信息
+            data = pytesseract.image_to_data(
+                processed_image, 
+                lang=lang, 
+                config=config, 
+                output_type=pytesseract.Output.DICT
+            )
+            
+            # 創建文本塊，按行組織
+            text_blocks = []
+            current_line = ""
+            current_y = None
+            current_x = 0
+            current_width = 0
+            current_height = 0
+            max_confidence = 0
+            
+            for i in range(len(data['text'])):
+                text = data['text'][i].strip()
+                confidence = int(data['conf'][i])
+                x = data['left'][i]
+                y = data['top'][i]
+                width = data['width'][i]
+                height = data['height'][i]
+                
+                if text and confidence > 30:
+                    # 如果是新行或位置差距較大，保存當前行
+                    if current_y is not None and abs(y - current_y) > 10:
+                        if current_line.strip():
+                            text_blocks.append({
+                                "text": current_line.strip(),
+                                "confidence": max_confidence / 100.0,
                                 "position": {
-                                    "x": data['left'][i],
-                                    "y": data['top'][i],
-                                    "width": data['width'][i],
-                                    "height": data['height'][i]
+                                    "x": current_x,
+                                    "y": current_y,
+                                    "width": current_width,
+                                    "height": current_height
                                 }
                             })
-                            
-                            line_idx += 1
-                            
-                except Exception as e:
-                    logger.warning(f"Tesseract配置 {config} 失敗: {e}")
-                    continue
+                        current_line = text
+                        current_y = y
+                        current_x = x
+                        current_width = width
+                        current_height = height
+                        max_confidence = confidence
+                    else:
+                        # 同一行，累積文本
+                        if current_line:
+                            current_line += text
+                        else:
+                            current_line = text
+                            current_y = y
+                            current_x = x
+                            current_width = width
+                            current_height = height
+                            max_confidence = confidence
+                        
+                        # 更新位置信息
+                        current_width = max(current_width, x + width - current_x)
+                        current_height = max(current_height, y + height - current_y)
+                        max_confidence = max(max_confidence, confidence)
             
-            # 去重和合併相近的文本
-            unique_texts = self._merge_nearby_texts(all_texts)
-            return unique_texts
+            # 保存最後一行
+            if current_line.strip():
+                text_blocks.append({
+                    "text": current_line.strip(),
+                    "confidence": max_confidence / 100.0,
+                    "position": {
+                        "x": current_x,
+                        "y": current_y,
+                        "width": current_width,
+                        "height": current_height
+                    }
+                })
+            
+            return text_blocks
             
         except Exception as e:
             logger.error(f"Tesseract OCR失敗: {e}")
@@ -277,142 +298,12 @@ class TesseractOCR:
         
         return overlap_x and overlap_y
 
-class PaddleOCRProcessor:
-    """PaddleOCR處理器 - 完全免費"""
-    
-    def __init__(self):
-        """初始化PaddleOCR"""
-        self.paddle_ocr = None
-        self._initialized = False
-    
-    def _init_paddle_ocr(self):
-        """延遲初始化PaddleOCR - 添加CPU兼容性檢查"""
-        if not self._initialized:
-            try:
-                # 檢查是否在Streamlit Cloud環境
-                import os
-                is_streamlit_cloud = os.environ.get('STREAMLIT_CLOUD', False)
-                
-                if is_streamlit_cloud:
-                    logger.warning("檢測到Streamlit Cloud環境，PaddleOCR可能不兼容，將使用Tesseract")
-                    self.paddle_ocr = None
-                    self._initialized = True
-                    return
-                
-                # 嘗試初始化PaddleOCR
-                self.paddle_ocr = PaddleOCR(
-                    use_angle_cls=True,
-                    lang='ch',  # 中文
-                    use_gpu=False,
-                    show_log=False,
-                    use_space_char=True,
-                    det_limit_side_len=960,
-                    det_limit_type='max',
-                    rec_batch_num=1,
-                    max_text_length=25,
-                    rec_algorithm='CRNN',
-                    cls_thresh=0.9,
-                    det_thresh=0.1,
-                    det_db_thresh=0.1,
-                    det_db_box_thresh=0.3,
-                    det_db_unclip_ratio=1.5,
-                    det_algorithm='DB',
-                    use_dilation=False,
-                    det_db_score_mode='fast'
-                )
-                self._initialized = True
-                logger.info("PaddleOCR初始化成功")
-            except Exception as e:
-                logger.error(f"PaddleOCR初始化失敗: {e}")
-                # 如果是CPU指令集錯誤，記錄並禁用PaddleOCR
-                if "Illegal instruction" in str(e) or "SIGILL" in str(e):
-                    logger.warning("檢測到CPU指令集不兼容，PaddleOCR已禁用，將使用Tesseract")
-                self.paddle_ocr = None
-                self._initialized = True
-    
-    def pdf_to_images(self, pdf_path: str, dpi: int = 300):
-        """將PDF轉換為圖像"""
-        try:
-            images = pdf2image.convert_from_path(
-                pdf_path, 
-                dpi=dpi,
-                first_page=None,
-                last_page=None,
-                fmt='RGB',
-                thread_count=4,
-                poppler_path=None,
-                grayscale=False,
-                size=None,
-                transparent=False,
-                single_file=False,
-                output_file=None,
-                jpegopt=None,
-                strict=False,
-                use_pdftocairo=False,
-                timeout=600
-            )
-            return [np.array(img) for img in images]
-        except Exception as e:
-            logger.error(f"PDF轉換失敗: {e}")
-            return []
-    
-    def extract_text(self, image: np.ndarray) -> list:
-        """使用PaddleOCR提取文本"""
-        try:
-            self._init_paddle_ocr()
-            
-            if self.paddle_ocr is None:
-                return []
-            
-            result = self.paddle_ocr.ocr(image, cls=True)
-            
-            if not result or not result[0]:
-                return []
-            
-            texts = []
-            for line in result[0]:
-                if len(line) >= 2:
-                    bbox = line[0]
-                    text = line[1][0]
-                    confidence = line[1][1]
-                    
-                    # 計算位置
-                    x_coords = [point[0] for point in bbox]
-                    y_coords = [point[1] for point in bbox]
-                    
-                    texts.append({
-                        "text": text,
-                        "confidence": confidence,
-                        "position": {
-                            "x": min(x_coords),
-                            "y": min(y_coords),
-                            "width": max(x_coords) - min(x_coords),
-                            "height": max(y_coords) - min(y_coords)
-                        }
-                    })
-            
-            return texts
-            
-        except Exception as e:
-            logger.error(f"PaddleOCR失敗: {e}")
-            return []
 
 def process_pdf_with_ocr(pdf_path: str, ocr_engine: str, dpi: int = 300) -> dict:
-    """使用指定的OCR引擎處理PDF - 支持自動降級"""
+    """使用Tesseract OCR處理PDF"""
     try:
-        # 選擇OCR引擎
-        if ocr_engine == "Tesseract":
-            ocr_processor = TesseractOCR()
-        elif ocr_engine == "PaddleOCR":
-            ocr_processor = PaddleOCRProcessor()
-            # 檢查PaddleOCR是否可用
-            ocr_processor._init_paddle_ocr()
-            if ocr_processor.paddle_ocr is None:
-                logger.warning("PaddleOCR不可用，自動降級到Tesseract")
-                ocr_processor = TesseractOCR()
-                ocr_engine = "Tesseract (PaddleOCR降級)"
-        else:
-            return {"error": "不支持的OCR引擎"}
+        # 只使用Tesseract
+        ocr_processor = TesseractOCR()
         
         # 轉換PDF為圖像
         images = ocr_processor.pdf_to_images(pdf_path, dpi=dpi)
@@ -424,30 +315,18 @@ def process_pdf_with_ocr(pdf_path: str, ocr_engine: str, dpi: int = 300) -> dict
             "file_name": os.path.basename(pdf_path),
             "total_pages": len(images),
             "pages": [],
-            "ocr_engine": ocr_engine
+            "ocr_engine": "Tesseract"
         }
         
         # 處理每一頁
         for page_num, image in enumerate(images, 1):
             texts = ocr_processor.extract_text(image)
             
-            # 分類文本
-            classified_blocks = []
-            for text_data in texts:
-                classified_blocks.append({
-                    "text": text_data["text"],
-                    "type": "content",  # 簡單分類
-                    "confidence": text_data["confidence"],
-                    "position": text_data["position"]
-                })
-            
-            # 按位置排序
-            classified_blocks.sort(key=lambda x: (x["position"]["y"], x["position"]["x"]))
-            
+            # 直接使用文本，保持原始格式
             page_result = {
                 "page_number": page_num,
-                "text_blocks": classified_blocks,
-                "full_text": "\n".join([block["text"] for block in classified_blocks])
+                "text_blocks": texts,
+                "full_text": "\n".join([block["text"] for block in texts])
             }
             result["pages"].append(page_result)
         
@@ -511,14 +390,32 @@ def create_download_links(result: dict):
     """創建下載鏈接"""
     st.markdown("### 💾 下載結果")
     
+    # 生成唯一的時間戳
+    timestamp = int(time.time())
+    
+    # 簡化的JSON格式（純文字）
+    simplified_result = {
+        "file_name": result["file_name"],
+        "total_pages": result["total_pages"],
+        "ocr_engine": result["ocr_engine"],
+        "pages": []
+    }
+    
+    for page in result["pages"]:
+        simplified_page = {
+            "page_number": page["page_number"],
+            "text": page["full_text"]  # 只保留純文字
+        }
+        simplified_result["pages"].append(simplified_page)
+    
     # JSON下載
-    json_data = json.dumps(result, ensure_ascii=False, indent=2)
+    json_data = json.dumps(simplified_result, ensure_ascii=False, indent=2)
     st.download_button(
         label="📄 下載JSON文件",
         data=json_data,
         file_name=f"{result['file_name']}_ocr.json",
         mime="application/json",
-        key=f"download_json_{int(time.time())}"
+        key=f"download_json_{timestamp}"
     )
     
     # 純文本下載
@@ -528,7 +425,7 @@ def create_download_links(result: dict):
         data=full_text,
         file_name=f"{result['file_name']}_text.txt",
         mime="text/plain",
-        key=f"download_text_{int(time.time())}"
+        key=f"download_text_{timestamp}"
     )
 
 def main():
@@ -550,14 +447,11 @@ def main():
     
     # 側邊欄
     with st.sidebar:
-        st.markdown("## 🔧 OCR引擎選擇")
+        st.markdown("## 🔧 OCR引擎")
         
-        # OCR引擎選擇
-        ocr_engine = st.radio(
-            "選擇OCR引擎:",
-            ["Tesseract", "PaddleOCR"],
-            help="Tesseract: 穩定可靠，PaddleOCR: 中文識別更準確"
-        )
+        # 固定使用Tesseract
+        ocr_engine = "Tesseract"
+        st.success("✅ 使用 Tesseract OCR")
         
         # 處理參數
         st.markdown("### 處理參數")
@@ -565,10 +459,7 @@ def main():
         
         # 引擎信息
         st.markdown("### ℹ️ 引擎信息")
-        if ocr_engine == "Tesseract":
-            st.info("**Tesseract OCR**\n- 完全免費\n- 穩定可靠\n- 支持多語言\n- 處理速度較快\n- 已修正斷句問題")
-        else:
-            st.info("**PaddleOCR**\n- 完全免費\n- 中文識別準確\n- 深度學習模型\n- 處理速度較慢\n- 在Streamlit Cloud上可能不兼容\n- 會自動降級到Tesseract")
+        st.info("**Tesseract OCR**\n- 完全免費\n- 穩定可靠\n- 支持多語言\n- 處理速度較快\n- 完全保留文字樣式和斷句\n- 優化的中文識別")
     
     # 主要內容
     st.markdown("### 📤 上傳PDF文件")
@@ -631,23 +522,23 @@ def main():
         st.markdown("""
         #### 🎯 功能特點
         
-        - **雙引擎支持**: 支持Tesseract和PaddleOCR兩種OCR引擎
+        - **Tesseract OCR**: 使用穩定可靠的Tesseract OCR引擎
         - **完全免費**: 所有功能完全免費，無需API密鑰
-        - **中文優化**: 針對中文字體優化
+        - **中文優化**: 針對中文字體優化，完全保留文字樣式和斷句
         - **多格式輸出**: 支持JSON和文本格式下載
         
         #### 📋 使用步驟
         
-        1. **選擇OCR引擎**: 在側邊欄選擇Tesseract或PaddleOCR
-        2. **上傳文件**: 選擇要處理的PDF文件
-        3. **開始處理**: 點擊"開始OCR處理"按鈕
-        4. **查看結果**: 查看識別結果和下載文件
+        1. **上傳文件**: 選擇要處理的PDF文件
+        2. **開始處理**: 點擊"開始OCR處理"按鈕
+        3. **查看結果**: 查看識別結果和下載文件
         
         #### ⚙️ 技術參數
         
         - **圖像DPI**: 可調整，建議300-600
         - **語言支持**: 簡體中文、繁體中文、英文
         - **處理時間**: 根據文件大小和頁數而定
+        - **文字保留**: 完全保留原始文字樣式和斷句
         
         #### 🔧 系統要求
         

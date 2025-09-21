@@ -3,5 +3,3 @@ tesseract-ocr
 tesseract-ocr-chi-tra
 tesseract-ocr-chi-sim
 tesseract-ocr-eng
-libgl1
-libglib2.0-0
