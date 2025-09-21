@@ -117,16 +117,16 @@ class TesseractOCR:
         return binary
     
     def extract_text(self, image: np.ndarray) -> list:
-        """使用Tesseract提取文本"""
+        """使用Tesseract提取文本 - 修正斷句問題"""
         try:
             # 預處理圖像
             processed_image = self.preprocess_image(image)
             
-            # 使用多種配置嘗試OCR
+            # 使用更適合的配置來避免斷句問題
             configs = [
-                '--psm 3 -c preserve_interword_spaces=1',  # 自動頁面分割
-                '--psm 4 -c preserve_interword_spaces=1',  # 單列文本
-                '--psm 6 -c preserve_interword_spaces=1',  # 單一文本塊
+                '--psm 3 -c preserve_interword_spaces=1 -c textord_min_linesize=2.0',  # 自動頁面分割，最小行高
+                '--psm 4 -c preserve_interword_spaces=1 -c textord_min_linesize=2.0',  # 單列文本，最小行高
+                '--psm 6 -c preserve_interword_spaces=1 -c textord_min_linesize=2.0',  # 單一文本塊，最小行高
             ]
             
             lang = 'chi_tra+chi_sim+eng'  # 繁體中文+簡體中文+英文
@@ -134,6 +134,14 @@ class TesseractOCR:
             
             for config in configs:
                 try:
+                    # 先嘗試獲取文本（不分詞）
+                    text_result = pytesseract.image_to_string(
+                        processed_image, 
+                        lang=lang, 
+                        config=config
+                    )
+                    
+                    # 再獲取詳細數據用於位置信息
                     data = pytesseract.image_to_data(
                         processed_image, 
                         lang=lang, 
@@ -141,11 +149,28 @@ class TesseractOCR:
                         output_type=pytesseract.Output.DICT
                     )
                     
+                    # 處理文本結果，按行分割
+                    lines = text_result.strip().split('\n')
+                    line_idx = 0
+                    
                     for i in range(len(data['text'])):
                         text = data['text'][i].strip()
                         confidence = int(data['conf'][i])
                         
                         if text and confidence > 30 and len(text) > 0:
+                            # 如果文本太短，嘗試與下一行合併
+                            if len(text) < 3 and line_idx < len(lines) - 1:
+                                # 檢查是否為連續文本
+                                current_line = lines[line_idx] if line_idx < len(lines) else ""
+                                next_line = lines[line_idx + 1] if line_idx + 1 < len(lines) else ""
+                                
+                                # 合併短文本
+                                if current_line and next_line:
+                                    combined_text = current_line + next_line
+                                    if len(combined_text) > len(text):
+                                        text = combined_text
+                                        line_idx += 1
+                            
                             all_texts.append({
                                 "text": text,
                                 "confidence": confidence / 100.0,
@@ -156,17 +181,72 @@ class TesseractOCR:
                                     "height": data['height'][i]
                                 }
                             })
+                            
+                            line_idx += 1
+                            
                 except Exception as e:
                     logger.warning(f"Tesseract配置 {config} 失敗: {e}")
                     continue
             
-            # 去重
-            unique_texts = self._deduplicate_texts(all_texts)
+            # 去重和合併相近的文本
+            unique_texts = self._merge_nearby_texts(all_texts)
             return unique_texts
             
         except Exception as e:
             logger.error(f"Tesseract OCR失敗: {e}")
             return []
+    
+    def _merge_nearby_texts(self, texts: list) -> list:
+        """合併相近的文本，解決斷句問題"""
+        if not texts:
+            return []
+        
+        # 按位置排序
+        sorted_texts = sorted(texts, key=lambda x: (x["position"]["y"], x["position"]["x"]))
+        merged_texts = []
+        
+        for text_data in sorted_texts:
+            if not merged_texts:
+                merged_texts.append(text_data)
+                continue
+            
+            last_text = merged_texts[-1]
+            
+            # 檢查是否應該合併
+            should_merge = False
+            
+            # 1. 檢查垂直位置是否相近（同一行）
+            y_diff = abs(text_data["position"]["y"] - last_text["position"]["y"])
+            if y_diff < 20:  # 20像素內視為同一行
+                # 2. 檢查水平位置是否連續
+                x_gap = text_data["position"]["x"] - (last_text["position"]["x"] + last_text["position"]["width"])
+                if x_gap < 50:  # 50像素內視為連續文本
+                    should_merge = True
+            
+            if should_merge:
+                # 合併文本
+                merged_text = last_text["text"] + text_data["text"]
+                merged_position = {
+                    "x": min(last_text["position"]["x"], text_data["position"]["x"]),
+                    "y": min(last_text["position"]["y"], text_data["position"]["y"]),
+                    "width": max(last_text["position"]["x"] + last_text["position"]["width"], 
+                               text_data["position"]["x"] + text_data["position"]["width"]) - 
+                            min(last_text["position"]["x"], text_data["position"]["x"]),
+                    "height": max(last_text["position"]["y"] + last_text["position"]["height"], 
+                                text_data["position"]["y"] + text_data["position"]["height"]) - 
+                             min(last_text["position"]["y"], text_data["position"]["y"])
+                }
+                
+                # 更新最後一個文本
+                merged_texts[-1] = {
+                    "text": merged_text,
+                    "confidence": max(last_text["confidence"], text_data["confidence"]),
+                    "position": merged_position
+                }
+            else:
+                merged_texts.append(text_data)
+        
+        return merged_texts
     
     def _deduplicate_texts(self, texts: list) -> list:
         """去重文本"""
@@ -206,9 +286,20 @@ class PaddleOCRProcessor:
         self._initialized = False
     
     def _init_paddle_ocr(self):
-        """延遲初始化PaddleOCR"""
+        """延遲初始化PaddleOCR - 添加CPU兼容性檢查"""
         if not self._initialized:
             try:
+                # 檢查是否在Streamlit Cloud環境
+                import os
+                is_streamlit_cloud = os.environ.get('STREAMLIT_CLOUD', False)
+                
+                if is_streamlit_cloud:
+                    logger.warning("檢測到Streamlit Cloud環境，PaddleOCR可能不兼容，將使用Tesseract")
+                    self.paddle_ocr = None
+                    self._initialized = True
+                    return
+                
+                # 嘗試初始化PaddleOCR
                 self.paddle_ocr = PaddleOCR(
                     use_angle_cls=True,
                     lang='ch',  # 中文
@@ -233,6 +324,9 @@ class PaddleOCRProcessor:
                 logger.info("PaddleOCR初始化成功")
             except Exception as e:
                 logger.error(f"PaddleOCR初始化失敗: {e}")
+                # 如果是CPU指令集錯誤，記錄並禁用PaddleOCR
+                if "Illegal instruction" in str(e) or "SIGILL" in str(e):
+                    logger.warning("檢測到CPU指令集不兼容，PaddleOCR已禁用，將使用Tesseract")
                 self.paddle_ocr = None
                 self._initialized = True
     
@@ -304,13 +398,19 @@ class PaddleOCRProcessor:
             return []
 
 def process_pdf_with_ocr(pdf_path: str, ocr_engine: str, dpi: int = 300) -> dict:
-    """使用指定的OCR引擎處理PDF"""
+    """使用指定的OCR引擎處理PDF - 支持自動降級"""
     try:
         # 選擇OCR引擎
         if ocr_engine == "Tesseract":
             ocr_processor = TesseractOCR()
         elif ocr_engine == "PaddleOCR":
             ocr_processor = PaddleOCRProcessor()
+            # 檢查PaddleOCR是否可用
+            ocr_processor._init_paddle_ocr()
+            if ocr_processor.paddle_ocr is None:
+                logger.warning("PaddleOCR不可用，自動降級到Tesseract")
+                ocr_processor = TesseractOCR()
+                ocr_engine = "Tesseract (PaddleOCR降級)"
         else:
             return {"error": "不支持的OCR引擎"}
         
@@ -466,9 +566,9 @@ def main():
         # 引擎信息
         st.markdown("### ℹ️ 引擎信息")
         if ocr_engine == "Tesseract":
-            st.info("**Tesseract OCR**\n- 完全免費\n- 穩定可靠\n- 支持多語言\n- 處理速度較快")
+            st.info("**Tesseract OCR**\n- 完全免費\n- 穩定可靠\n- 支持多語言\n- 處理速度較快\n- 已修正斷句問題")
         else:
-            st.info("**PaddleOCR**\n- 完全免費\n- 中文識別準確\n- 深度學習模型\n- 處理速度較慢")
+            st.info("**PaddleOCR**\n- 完全免費\n- 中文識別準確\n- 深度學習模型\n- 處理速度較慢\n- 在Streamlit Cloud上可能不兼容\n- 會自動降級到Tesseract")
     
     # 主要內容
     st.markdown("### 📤 上傳PDF文件")
