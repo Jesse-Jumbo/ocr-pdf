@@ -21,6 +21,20 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# 添加自定義CSS
+st.markdown("""
+<style>
+.scrollable-container {
+    max-height: 600px;
+    overflow-y: auto;
+    border: 1px solid #e0e0e0;
+    border-radius: 5px;
+    padding: 10px;
+    background-color: #fafafa;
+}
+</style>
+""", unsafe_allow_html=True)
+
 # 設置日誌
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -397,26 +411,32 @@ def display_comparison_view(result: dict, pdf_images=None):
     """顯示對比視窗 - 原文件與識別結果並排顯示"""
     st.markdown("### 🔍 原文件與識別結果對比")
     
-    # 頁面選擇器
-    page_options = [f"第 {page['page_number']} 頁" for page in result["pages"]]
-    selected_page_idx = st.selectbox("選擇要查看的頁面:", range(len(page_options)), format_func=lambda x: page_options[x])
+    # 創建兩列布局
+    col1, col2 = st.columns(2)
     
-    if selected_page_idx is not None:
-        selected_page = result["pages"][selected_page_idx]
+    with col1:
+        st.markdown("#### 📄 原文件")
+        if pdf_images:
+            # 在可滾動的容器中顯示所有頁面
+            st.markdown('<div class="scrollable-container">', unsafe_allow_html=True)
+            for i, image in enumerate(pdf_images):
+                st.image(image, caption=f"第 {i+1} 頁", use_column_width=True)
+                if i < len(pdf_images) - 1:  # 不在最後一頁後添加分隔線
+                    st.markdown("---")
+            st.markdown('</div>', unsafe_allow_html=True)
+        else:
+            st.info("原文件圖像預覽功能需要重新上傳文件")
+    
+    with col2:
+        st.markdown("#### 📝 識別結果")
         
-        # 創建兩列布局
-        col1, col2 = st.columns(2)
+        # 頁面選擇器
+        page_options = [f"第 {page['page_number']} 頁" for page in result["pages"]]
+        selected_page_idx = st.selectbox("選擇要查看的頁面:", range(len(page_options)), format_func=lambda x: page_options[x])
         
-        with col1:
-            st.markdown("#### 📄 原文件")
-            if pdf_images and selected_page_idx < len(pdf_images):
-                # 顯示原文件圖像
-                st.image(pdf_images[selected_page_idx], caption=f"第 {selected_page['page_number']} 頁", use_column_width=True)
-            else:
-                st.info("原文件圖像預覽功能需要重新上傳文件")
-        
-        with col2:
-            st.markdown("#### 📝 識別結果")
+        if selected_page_idx is not None:
+            selected_page = result["pages"][selected_page_idx]
+            
             if selected_page["text_blocks"]:
                 # 顯示識別到的文本
                 for i, block in enumerate(selected_page["text_blocks"]):
@@ -567,19 +587,10 @@ def main():
         with col3:
             st.write(f"**OCR引擎:** {ocr_engine}")
         
-        # 文件預覽
-        st.markdown("#### 📄 文件預覽")
+        # 保存文件到臨時目錄
         with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
             tmp_file.write(uploaded_file.getvalue())
             tmp_file_path = tmp_file.name
-        
-        # 轉換PDF為圖像進行預覽
-        try:
-            images = pdf2image.convert_from_path(tmp_file_path, dpi=150, first_page=1, last_page=1)
-            if images:
-                st.image(images[0], caption="第一頁預覽", use_column_width=True)
-        except Exception as e:
-            st.warning(f"無法預覽文件: {e}")
         
         # 處理按鈕
         if st.button("🚀 開始OCR處理", type="primary"):
@@ -589,45 +600,15 @@ def main():
             progress_bar = st.progress(0)
             status_text = st.empty()
             
-            # 創建即時預覽區域
-            st.markdown("#### 🔄 即時處理預覽")
-            preview_col1, preview_col2 = st.columns(2)
-            
-            with preview_col1:
-                st.markdown("##### 📄 原文件")
-                # 轉換所有頁面為圖像
-                all_images = pdf2image.convert_from_path(tmp_file_path, dpi=150)
-                st.session_state.pdf_images = all_images
-                
-                # 顯示第一頁
-                if all_images:
-                    st.image(all_images[0], caption="第1頁", use_column_width=True)
-            
-            with preview_col2:
-                st.markdown("##### 📝 識別結果")
-                result_placeholder = st.empty()
+            # 轉換所有頁面為圖像並保存到session state
+            all_images = pdf2image.convert_from_path(tmp_file_path, dpi=150)
+            st.session_state.pdf_images = all_images
             
             # 定義進度回調函數
             def progress_callback(message, current_page, total_pages, partial_result=None):
                 progress = current_page / total_pages
                 progress_bar.progress(progress)
                 status_text.text(f"{message} ({current_page}/{total_pages})")
-                
-                # 即時更新識別結果
-                if partial_result and current_page > 0:
-                    with preview_col2:
-                        st.markdown("##### 📝 識別結果")
-                        for i, page in enumerate(partial_result["pages"]):
-                            if i < current_page:  # 只顯示已完成的頁面
-                                st.markdown(f"**第 {page['page_number']} 頁:**")
-                                st.text(page['full_text'][:200] + "..." if len(page['full_text']) > 200 else page['full_text'])
-                                st.markdown("---")
-                
-                # 更新原文件顯示
-                if current_page <= len(all_images):
-                    with preview_col1:
-                        st.markdown("##### 📄 原文件")
-                        st.image(all_images[current_page-1], caption=f"第{current_page}頁", use_column_width=True)
             
             # 處理文件
             result = process_pdf_with_ocr(tmp_file_path, ocr_engine, dpi, progress_callback)
