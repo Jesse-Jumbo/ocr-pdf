@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 OCR Web應用 - 完全免費版本
-支持Tesseract和PaddleOCR兩種OCR引擎
+支持Tesseract OCR引擎
 """
 
 import streamlit as st
@@ -27,10 +27,38 @@ st.markdown("""
 .scrollable-container {
     max-height: 600px;
     overflow-y: auto;
-    border: 1px solid #e0e0e0;
-    border-radius: 5px;
+    border: 2px solid #d0d0d0;
+    border-radius: 8px;
+    padding: 15px;
+    background-color: #ffffff;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+/* 程式碼風格的識別結果顯示 */
+.scrollable-container p {
+    margin: 0;
+    line-height: 1.2;
+    font-family: 'Courier New', monospace;
+    font-size: 14px;
+}
+
+.scrollable-container div {
+    margin: 0;
+    line-height: 1.2;
+}
+
+/* 程式碼風格的文本顯示 */
+.code-style-text {
+    font-family: 'Courier New', monospace;
+    font-size: 14px;
+    line-height: 1.2;
+    margin: 0;
     padding: 10px;
-    background-color: #fafafa;
+    white-space: pre-wrap;
+    background-color: #f8f9fa;
+    border: 1px solid #e9ecef;
+    border-radius: 4px;
+    color: #333333;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -45,7 +73,6 @@ try:
     import numpy as np
     from PIL import Image
     import pdf2image
-    from paddleocr import PaddleOCR
     import pytesseract
     st.success("✅ 所有OCR依賴庫導入成功")
     OCR_AVAILABLE = True
@@ -104,43 +131,52 @@ class TesseractOCR:
             return []
     
     def preprocess_image(self, image: np.ndarray) -> np.ndarray:
-        """圖像預處理"""
+        """簡化的圖像預處理 - 避免過度處理"""
         # 轉換為灰度
         if len(image.shape) == 3:
             gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
         else:
             gray = image.copy()
         
-        # 去噪
-        denoised = cv2.fastNlMeansDenoising(gray, None, h=10, templateWindowSize=7, searchWindowSize=21)
+        # 輕度去噪
+        denoised = cv2.fastNlMeansDenoising(gray, None, h=3, templateWindowSize=7, searchWindowSize=21)
         
-        # 對比度增強
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+        # 輕度對比度增強
+        clahe = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8,8))
         enhanced = clahe.apply(denoised)
         
-        # 銳化
-        kernel = np.array([[-1,-1,-1], [-1,9,-1], [-1,-1,-1]])
-        sharpened = cv2.filter2D(enhanced, -1, kernel)
-        
-        # 二值化
-        binary = cv2.adaptiveThreshold(
-            sharpened, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-            cv2.THRESH_BINARY, 11, 2
-        )
-        
-        return binary
+        # 返回增強後的圖像，不進行二值化
+        return enhanced
     
-    def extract_text(self, image: np.ndarray) -> list:
+    def extract_text(self, image: np.ndarray, use_preprocessing: bool = True, line_sensitivity: float = 0.8) -> list:
         """使用Tesseract提取文本 - 改善標點符號和標題識別"""
         try:
-            # 預處理圖像
-            processed_image = self.preprocess_image(image)
+            # 根據參數決定是否預處理圖像
+            if use_preprocessing:
+                processed_image = self.preprocess_image(image)
+            else:
+                # 只轉換為灰度，不進行其他預處理
+                if len(image.shape) == 3:
+                    processed_image = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+                else:
+                    processed_image = image.copy()
             
-            # 使用多種配置來改善識別
+            # 簡化的Tesseract配置 - 先測試基本功能
             configs = [
-                '--psm 3 -c preserve_interword_spaces=1 -c textord_min_linesize=1.5 -c textord_old_baselines=0',
-                '--psm 4 -c preserve_interword_spaces=1 -c textord_min_linesize=1.5',
-                '--psm 6 -c preserve_interword_spaces=1 -c textord_min_linesize=1.5'
+                # 配置1: 自動頁面分割，使用OEM 2混合模式
+                '--psm 3 --oem 2',
+                # 配置2: 單列文本塊
+                '--psm 4 --oem 2',
+                # 配置3: 單一文本塊
+                '--psm 6 --oem 2',
+                # 配置4: 單一文本行
+                '--psm 7 --oem 2',
+                # 配置5: 單一詞
+                '--psm 8 --oem 2',
+                # 配置6: 嘗試OEM 3 LSTM
+                '--psm 3 --oem 3',
+                # 配置7: 嘗試OEM 1 傳統模式
+                '--psm 3 --oem 1'
             ]
             
             lang = 'chi_tra+chi_sim+eng'  # 繁體中文+簡體中文+英文
@@ -148,7 +184,7 @@ class TesseractOCR:
             best_confidence = 0
             
             # 嘗試多種配置，選擇最佳結果
-            for config in configs:
+            for i, config in enumerate(configs):
                 try:
                     text_result = pytesseract.image_to_string(
                         processed_image, 
@@ -167,10 +203,14 @@ class TesseractOCR:
                     confidences = [int(conf) for conf in data['conf'] if int(conf) > 0]
                     avg_confidence = sum(confidences) / len(confidences) if confidences else 0
                     
+                    # 記錄每個配置的結果
+                    logger.info(f"配置 {i+1} ({config}): 置信度={avg_confidence:.2f}, 結果='{text_result[:50]}...'")
+                    
                     if avg_confidence > best_confidence:
                         best_result = text_result
                         best_confidence = avg_confidence
                         best_data = data
+                        logger.info(f"新的最佳配置: {config}, 置信度={avg_confidence:.2f}")
                         
                 except Exception as e:
                     logger.warning(f"Tesseract配置 {config} 失敗: {e}")
@@ -183,15 +223,11 @@ class TesseractOCR:
             processed_text = self._post_process_text(best_result)
             lines = processed_text.strip().split('\n')
             
-            # 創建文本塊
+            # 改進的文本塊創建 - 更準確的分行識別
             text_blocks = []
-            current_line = ""
-            current_y = None
-            current_x = 0
-            current_width = 0
-            current_height = 0
-            max_confidence = 0
             
+            # 首先收集所有有效的文本元素
+            text_elements = []
             for i in range(len(best_data['text'])):
                 text = best_data['text'][i].strip()
                 confidence = int(best_data['conf'][i])
@@ -201,55 +237,97 @@ class TesseractOCR:
                 height = best_data['height'][i]
                 
                 if text and confidence > 30:
-                    # 如果是新行或位置差距較大，保存當前行
-                    if current_y is not None and abs(y - current_y) > 15:
-                        if current_line.strip():
-                            # 後處理當前行
-                            processed_line = self._post_process_text(current_line.strip())
-                            text_blocks.append({
-                                "text": processed_line,
-                                "confidence": max_confidence / 100.0,
-                                "position": {
-                                    "x": current_x,
-                                    "y": current_y,
-                                    "width": current_width,
-                                    "height": current_height
-                                }
-                            })
-                        current_line = text
-                        current_y = y
-                        current_x = x
-                        current_width = width
-                        current_height = height
-                        max_confidence = confidence
-                    else:
-                        # 同一行，累積文本
-                        if current_line:
-                            current_line += text
-                        else:
-                            current_line = text
-                            current_y = y
-                            current_x = x
-                            current_width = width
-                            current_height = height
-                            max_confidence = confidence
-                        
-                        # 更新位置信息
-                        current_width = max(current_width, x + width - current_x)
-                        current_height = max(current_height, y + height - current_y)
-                        max_confidence = max(max_confidence, confidence)
+                    text_elements.append({
+                        'text': text,
+                        'confidence': confidence,
+                        'x': x,
+                        'y': y,
+                        'width': width,
+                        'height': height
+                    })
             
-            # 保存最後一行
-            if current_line.strip():
-                processed_line = self._post_process_text(current_line.strip())
+            if not text_elements:
+                return []
+            
+            # 按Y座標排序，然後按X座標排序
+            text_elements.sort(key=lambda elem: (elem['y'], elem['x']))
+            
+            # 計算平均行高
+            heights = [elem['height'] for elem in text_elements]
+            avg_height = sum(heights) / len(heights) if heights else 20
+            
+            # 分行邏輯：Y座標差距超過平均行高的指定倍數就認為是新行
+            line_threshold = avg_height * line_sensitivity
+            
+            current_line_elements = []
+            current_y = None
+            
+            for elem in text_elements:
+                if current_y is None or abs(elem['y'] - current_y) <= line_threshold:
+                    # 同一行
+                    current_line_elements.append(elem)
+                    current_y = elem['y'] if current_y is None else min(current_y, elem['y'])
+                else:
+                    # 新行，處理當前行
+                    if current_line_elements:
+                        # 按X座標排序當前行
+                        current_line_elements.sort(key=lambda e: e['x'])
+                        
+                        # 合併當前行文本
+                        line_text = ""
+                        line_confidence = 0
+                        line_x = min(e['x'] for e in current_line_elements)
+                        line_y = min(e['y'] for e in current_line_elements)
+                        line_width = max(e['x'] + e['width'] for e in current_line_elements) - line_x
+                        line_height = max(e['y'] + e['height'] for e in current_line_elements) - line_y
+                        
+                        for e in current_line_elements:
+                            line_text += e['text']
+                            line_confidence = max(line_confidence, e['confidence'])
+                        
+                        # 後處理文本
+                        processed_text = self._post_process_text(line_text.strip())
+                        
+                        text_blocks.append({
+                            "text": processed_text,
+                            "confidence": line_confidence / 100.0,
+                            "position": {
+                                "x": line_x,
+                                "y": line_y,
+                                "width": line_width,
+                                "height": line_height
+                            }
+                        })
+                    
+                    # 開始新行
+                    current_line_elements = [elem]
+                    current_y = elem['y']
+            
+            # 處理最後一行
+            if current_line_elements:
+                current_line_elements.sort(key=lambda e: e['x'])
+                
+                line_text = ""
+                line_confidence = 0
+                line_x = min(e['x'] for e in current_line_elements)
+                line_y = min(e['y'] for e in current_line_elements)
+                line_width = max(e['x'] + e['width'] for e in current_line_elements) - line_x
+                line_height = max(e['y'] + e['height'] for e in current_line_elements) - line_y
+                
+                for e in current_line_elements:
+                    line_text += e['text']
+                    line_confidence = max(line_confidence, e['confidence'])
+                
+                processed_text = self._post_process_text(line_text.strip())
+                
                 text_blocks.append({
-                    "text": processed_line,
-                    "confidence": max_confidence / 100.0,
+                    "text": processed_text,
+                    "confidence": line_confidence / 100.0,
                     "position": {
-                        "x": current_x,
-                        "y": current_y,
-                        "width": current_width,
-                        "height": current_height
+                        "x": line_x,
+                        "y": line_y,
+                        "width": line_width,
+                        "height": line_height
                     }
                 })
             
@@ -266,70 +344,12 @@ class TesseractOCR:
         
         # 修復常見的標點符號識別錯誤
         replacements = {
-            # 修復句號
-            '。': '。',
-            '．': '。',
-            '·': '。',
-            '•': '。',
-            'o': '。',
-            'O': '。',
-            '0': '。',
-            
-            # 修復逗號
-            '，': '，',
-            ',': '，',
-            '、': '，',
-            
-            # 修復冒號
-            '：': '：',
-            ':': '：',
-            
-            # 修復分號
-            '；': '；',
-            ';': '；',
-            
-            # 修復問號
-            '？': '？',
-            '?': '？',
-            
-            # 修復感嘆號
-            '！': '！',
-            '!': '！',
-            
-            # 修復括號
-            '（': '（',
-            '(': '（',
-            '）': '）',
-            ')': '）',
-            
-            # 修復引號
-            '"': '"',
-            '"': '"',
-            "'": "'",
-            "'": "'",
-            
-            # 修復破折號
-            '—': '—',
-            '-': '—',
-            '–': '—',
-            
-            # 修復省略號
-            '…': '…',
-            '...': '…',
+            # 如有需要 "x": "y"
         }
         
         # 應用替換
         for old, new in replacements.items():
             text = text.replace(old, new)
-        
-        # 修復常見的識別錯誤
-        text = text.replace('o ', '。')  # o 後面跟空格 -> 句號
-        text = text.replace('o\n', '。\n')  # o 後面跟換行 -> 句號
-        text = text.replace('o', '。')  # 單獨的 o -> 句號
-        
-        # 修復列表符號
-        text = text.replace('o ', '• ')  # o 開頭 -> 列表符號
-        text = text.replace('o\n', '•\n')  # o 開頭換行 -> 列表符號
         
         # 修復標題識別（大寫字母開頭且較短的行）
         lines = text.split('\n')
@@ -353,89 +373,9 @@ class TesseractOCR:
         
         return '\n'.join(processed_lines)
     
-    def _merge_nearby_texts(self, texts: list) -> list:
-        """合併相近的文本，解決斷句問題"""
-        if not texts:
-            return []
-        
-        # 按位置排序
-        sorted_texts = sorted(texts, key=lambda x: (x["position"]["y"], x["position"]["x"]))
-        merged_texts = []
-        
-        for text_data in sorted_texts:
-            if not merged_texts:
-                merged_texts.append(text_data)
-                continue
-            
-            last_text = merged_texts[-1]
-            
-            # 檢查是否應該合併
-            should_merge = False
-            
-            # 1. 檢查垂直位置是否相近（同一行）
-            y_diff = abs(text_data["position"]["y"] - last_text["position"]["y"])
-            if y_diff < 20:  # 20像素內視為同一行
-                # 2. 檢查水平位置是否連續
-                x_gap = text_data["position"]["x"] - (last_text["position"]["x"] + last_text["position"]["width"])
-                if x_gap < 50:  # 50像素內視為連續文本
-                    should_merge = True
-            
-            if should_merge:
-                # 合併文本
-                merged_text = last_text["text"] + text_data["text"]
-                merged_position = {
-                    "x": min(last_text["position"]["x"], text_data["position"]["x"]),
-                    "y": min(last_text["position"]["y"], text_data["position"]["y"]),
-                    "width": max(last_text["position"]["x"] + last_text["position"]["width"], 
-                               text_data["position"]["x"] + text_data["position"]["width"]) - 
-                            min(last_text["position"]["x"], text_data["position"]["x"]),
-                    "height": max(last_text["position"]["y"] + last_text["position"]["height"], 
-                                text_data["position"]["y"] + text_data["position"]["height"]) - 
-                             min(last_text["position"]["y"], text_data["position"]["y"])
-                }
-                
-                # 更新最後一個文本
-                merged_texts[-1] = {
-                    "text": merged_text,
-                    "confidence": max(last_text["confidence"], text_data["confidence"]),
-                    "position": merged_position
-                }
-            else:
-                merged_texts.append(text_data)
-        
-        return merged_texts
-    
-    def _deduplicate_texts(self, texts: list) -> list:
-        """去重文本"""
-        unique_texts = []
-        for text_data in texts:
-            is_duplicate = False
-            for existing in unique_texts:
-                if (self._texts_overlap(text_data, existing) and 
-                    abs(len(text_data["text"]) - len(existing["text"])) < 2):
-                    if text_data["confidence"] > existing["confidence"]:
-                        unique_texts.remove(existing)
-                        unique_texts.append(text_data)
-                    is_duplicate = True
-                    break
-            
-            if not is_duplicate:
-                unique_texts.append(text_data)
-        
-        return unique_texts
-    
-    def _texts_overlap(self, text1: dict, text2: dict) -> bool:
-        """檢查文本是否重疊"""
-        pos1 = text1["position"]
-        pos2 = text2["position"]
-        
-        overlap_x = not (pos1["x"] + pos1["width"] < pos2["x"] or pos2["x"] + pos2["width"] < pos1["x"])
-        overlap_y = not (pos1["y"] + pos1["height"] < pos2["y"] or pos2["y"] + pos2["height"] < pos1["y"])
-        
-        return overlap_x and overlap_y
 
 
-def process_pdf_with_ocr(pdf_path: str, ocr_engine: str, dpi: int = 300, progress_callback=None) -> dict:
+def process_pdf_with_ocr(pdf_path: str, ocr_engine: str, dpi: int = 300, use_preprocessing: bool = True, line_sensitivity: float = 0.8, progress_callback=None) -> dict:
     """使用Tesseract OCR處理PDF - 支持即時回調"""
     try:
         # 只使用Tesseract
@@ -456,78 +396,47 @@ def process_pdf_with_ocr(pdf_path: str, ocr_engine: str, dpi: int = 300, progres
         
         # 處理每一頁
         for page_num, image in enumerate(images, 1):
+            logger.info(f"開始處理第 {page_num} 頁，總共 {len(images)} 頁")
+            
             if progress_callback:
                 progress_callback(f"正在處理第 {page_num} 頁...", page_num, len(images))
             
-            texts = ocr_processor.extract_text(image)
-            
-            # 直接使用文本，保持原始格式
-            page_result = {
-                "page_number": page_num,
-                "text_blocks": texts,
-                "full_text": "\n".join([block["text"] for block in texts])
-            }
-            result["pages"].append(page_result)
-            
-            # 即時回調，讓UI更新
-            if progress_callback:
-                progress_callback(f"第 {page_num} 頁處理完成", page_num, len(images), result)
+            try:
+                texts = ocr_processor.extract_text(image, use_preprocessing, line_sensitivity)
+                logger.info(f"第 {page_num} 頁識別到 {len(texts)} 個文本塊")
+                
+                # 直接使用文本，保持原始格式
+                page_result = {
+                    "page_number": page_num,
+                    "text_blocks": texts,
+                    "full_text": "\n".join([block["text"] for block in texts])
+                }
+                result["pages"].append(page_result)
+                
+                logger.info(f"第 {page_num} 頁處理完成，已處理 {len(result['pages'])} 頁")
+                
+                # 每頁完成後立即回調，讓UI即時更新
+                if progress_callback:
+                    progress_callback(f"第 {page_num} 頁處理完成", page_num, len(images), result)
+                    
+            except Exception as e:
+                logger.error(f"處理第 {page_num} 頁時發生錯誤: {e}")
+                # 即使某頁失敗，也繼續處理下一頁
+                page_result = {
+                    "page_number": page_num,
+                    "text_blocks": [],
+                    "full_text": f"處理錯誤: {str(e)}"
+                }
+                result["pages"].append(page_result)
+                
+                if progress_callback:
+                    progress_callback(f"第 {page_num} 頁處理失敗: {str(e)}", page_num, len(images), result)
         
         return result
         
     except Exception as e:
         return {"error": f"OCR處理失敗: {str(e)}"}
 
-def display_results(result: dict):
-    """顯示處理結果"""
-    st.markdown("### 📊 處理結果概覽")
-    
-    # 基本統計
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.metric("總頁數", result["total_pages"])
-    
-    with col2:
-        total_blocks = sum(len(page["text_blocks"]) for page in result["pages"])
-        st.metric("文本塊總數", total_blocks)
-    
-    with col3:
-        st.metric("OCR引擎", result["ocr_engine"])
-    
-    with col4:
-        avg_confidence = sum(
-            sum(block["confidence"] for block in page["text_blocks"]) 
-            for page in result["pages"]
-        ) / max(total_blocks, 1)
-        st.metric("平均置信度", f"{avg_confidence:.2f}")
-    
-    # 頁面選擇器
-    st.markdown("### 📄 頁面詳細信息")
-    page_options = [f"第 {page['page_number']} 頁" for page in result["pages"]]
-    selected_page_idx = st.selectbox("選擇要查看的頁面:", range(len(page_options)), format_func=lambda x: page_options[x])
-    
-    if selected_page_idx is not None:
-        selected_page = result["pages"][selected_page_idx]
-        
-        col1, col2 = st.columns([1, 2])
-        
-        with col1:
-            st.markdown("#### 頁面信息")
-            st.write(f"**頁碼:** {selected_page['page_number']}")
-            st.write(f"**文本塊數量:** {len(selected_page['text_blocks'])}")
-            
-            if selected_page["text_blocks"]:
-                avg_conf = sum(block["confidence"] for block in selected_page["text_blocks"]) / len(selected_page["text_blocks"])
-                st.write(f"**平均置信度:** {avg_conf:.2f}")
-        
-        with col2:
-            st.markdown("#### 識別文本")
-            if selected_page["text_blocks"]:
-                for i, block in enumerate(selected_page["text_blocks"]):
-                    st.write(f"**{i+1}.** {block['text']} (置信度: {block['confidence']:.2f})")
-            else:
-                st.write("此頁面沒有識別到文本")
 
 def display_comparison_view(result: dict, pdf_images=None):
     """顯示對比視窗 - 原文件與識別結果並排顯示"""
@@ -539,36 +448,38 @@ def display_comparison_view(result: dict, pdf_images=None):
     with col1:
         st.markdown("#### 📄 原文件")
         if pdf_images:
-            # 在可滾動的容器中顯示所有頁面
-            st.markdown('<div class="scrollable-container">', unsafe_allow_html=True)
+            # 使用Streamlit的expander來創建可折疊的嵌入視窗效果
             for i, image in enumerate(pdf_images):
-                st.image(image, caption=f"第 {i+1} 頁", use_column_width=True)
-                if i < len(pdf_images) - 1:  # 不在最後一頁後添加分隔線
-                    st.markdown("---")
-            st.markdown('</div>', unsafe_allow_html=True)
+                with st.expander(f"第 {i+1} 頁", expanded=(i==0)):  # 第一頁默認展開
+                    st.image(image, use_column_width=True)
         else:
             st.info("原文件圖像預覽功能需要重新上傳文件")
     
     with col2:
         st.markdown("#### 📝 識別結果")
         
-        # 頁面選擇器
-        page_options = [f"第 {page['page_number']} 頁" for page in result["pages"]]
-        selected_page_idx = st.selectbox("選擇要查看的頁面:", range(len(page_options)), format_func=lambda x: page_options[x])
-        
-        if selected_page_idx is not None:
-            selected_page = result["pages"][selected_page_idx]
-            
-            if selected_page["text_blocks"]:
-                # 顯示識別到的文本
-                for i, block in enumerate(selected_page["text_blocks"]):
-                    st.write(f"**{i+1}.** {block['text']}")
-            else:
-                st.write("此頁面沒有識別到文本")
-            
-            # 顯示完整文本
-            st.markdown("#### 📄 完整文本")
-            st.text_area("識別結果:", value=selected_page['full_text'], height=300, key=f"text_area_{selected_page_idx}")
+        if result["pages"]:
+            for page in result["pages"]:
+                with st.expander(f"第 {page['page_number']} 頁", expanded=(page['page_number']==1)):  # 第一頁默認展開
+                    if page["text_blocks"]:
+                        # 將所有文本塊合併成一個完整的文本
+                        full_text = ""
+                        for block in page["text_blocks"]:
+                            full_text += block['text'] + "\n"
+                        
+                        # 按行分割並添加行號
+                        lines = full_text.strip().split('\n')
+                        numbered_text = ""
+                        for i, line in enumerate(lines, 1):
+                            if line.strip():  # 只顯示非空行
+                                numbered_text += f"{i:3d} | {line}\n"
+                        
+                        # 使用Streamlit的code組件顯示
+                        st.code(numbered_text, language=None)
+                    else:
+                        st.write("此頁面沒有識別到文本")
+        else:
+            st.info("尚未開始OCR處理或沒有識別結果")
 
 def download_text_file(result: dict, key_suffix: str = ""):
     """下載文本文件"""
@@ -650,6 +561,8 @@ def main():
         # 處理參數
         st.markdown("### 處理參數")
         dpi = st.slider("圖像DPI", 150, 600, 300, help="更高的DPI會提高識別精度但處理時間更長")
+        use_preprocessing = st.checkbox("使用圖像預處理", value=True, help="關閉此選項使用原始圖像進行OCR")
+        line_sensitivity = st.slider("分行敏感度", 0.3, 1.5, 0.8, help="較低值會更嚴格地分行，較高值會更寬鬆地分行")
         
         # 引擎信息
         st.markdown("### ℹ️ 引擎信息")
@@ -714,6 +627,16 @@ def main():
             tmp_file.write(uploaded_file.getvalue())
             tmp_file_path = tmp_file.name
         
+        # 立即轉換PDF為圖像並顯示
+        if 'pdf_images' not in st.session_state or st.session_state.current_file != uploaded_file.name:
+            with st.spinner("正在轉換PDF為圖像..."):
+                all_images = pdf2image.convert_from_path(tmp_file_path, dpi=150)
+                st.session_state.pdf_images = all_images
+                st.session_state.current_file = uploaded_file.name
+                st.session_state.processing_results = None  # 重置處理結果
+        
+        # 移除PDF預覽區塊
+        
         # 處理按鈕
         if st.button("🚀 開始OCR處理", type="primary"):
             st.session_state.is_processing = True
@@ -722,18 +645,26 @@ def main():
             progress_bar = st.progress(0)
             status_text = st.empty()
             
-            # 轉換所有頁面為圖像並保存到session state
-            all_images = pdf2image.convert_from_path(tmp_file_path, dpi=150)
-            st.session_state.pdf_images = all_images
+            # 初始化處理結果
+            st.session_state.processing_results = {
+                "file_name": uploaded_file.name,
+                "total_pages": len(st.session_state.pdf_images),
+                "pages": [],
+                "ocr_engine": "Tesseract"
+            }
             
-            # 定義進度回調函數
+            # 定義進度回調函數 - 不立即rerun
             def progress_callback(message, current_page, total_pages, partial_result=None):
                 progress = current_page / total_pages
                 progress_bar.progress(progress)
                 status_text.text(f"{message} ({current_page}/{total_pages})")
+                
+                # 更新處理結果
+                if partial_result:
+                    st.session_state.processing_results = partial_result
             
             # 處理文件
-            result = process_pdf_with_ocr(tmp_file_path, ocr_engine, dpi, progress_callback)
+            result = process_pdf_with_ocr(tmp_file_path, ocr_engine, dpi, use_preprocessing, line_sensitivity, progress_callback)
             
             # 清理臨時文件
             os.unlink(tmp_file_path)
@@ -746,9 +677,8 @@ def main():
                 status_text.text("處理完成！")
                 st.success("✅ OCR處理完成！")
                 
-                # 保存結果到session state
+                # 保存最終結果
                 st.session_state.processing_results = result
-                st.session_state.current_file = uploaded_file.name
                 
                 # 添加到歷史記錄
                 if result not in st.session_state.history:
@@ -760,8 +690,12 @@ def main():
                 st.session_state.is_processing = False
                 st.rerun()
     
-    # 如果有處理結果，顯示對比視窗
-    if st.session_state.processing_results and not st.session_state.is_processing:
+    # 如果有處理結果，顯示對比視窗（包括處理中）
+    if st.session_state.processing_results and st.session_state.processing_results.get("pages"):
+        # 顯示調試信息
+        if st.session_state.is_processing:
+            st.info(f"正在處理中... 已處理 {len(st.session_state.processing_results['pages'])} 頁，總共 {st.session_state.processing_results['total_pages']} 頁")
+        
         display_comparison_view(st.session_state.processing_results, st.session_state.pdf_images)
     
     # 使用說明
